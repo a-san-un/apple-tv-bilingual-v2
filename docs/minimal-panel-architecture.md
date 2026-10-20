@@ -37,7 +37,7 @@ architecture は、責務境界、依存方向、データフロー、playback s
 
 ## 2. 用語
 
-この文書では、次の用語を固定して使う。
+このプロジェクトのすべての `docs/` 文書では、次の用語を固定して使う。用語の定義はこの表を正本とし、他の文書では再定義しない。
 
 | 用語 | 意味 |
 | --- | --- |
@@ -71,6 +71,12 @@ architecture は、責務境界、依存方向、データフロー、playback s
 | view helper | truth から renderer 向けの読み取り結果を導出する純粋な helper |
 | available width | 既存 UI を含む再生画面領域と panel の再配置に使う利用可能な横幅 |
 | waiting state | `textTracks` の準備待ちとして `session-lifecycle.ts` が一時的に持つ状態 |
+| language option | popup UI に表示する固定の候補言語 |
+| effective secondary language | `secondaryLang` が未設定のときにブラウザ言語 fallback を適用した、content 側で解決に使う母国語 |
+| browser language fallback | `secondaryLang` 未選択時に runtime で利用するブラウザ言語 |
+| settings store | 設定の読込・保存・検証・正規化を行う `src/settings/settings-store.ts` |
+| 設定未完了 | `primaryLang` が未設定、または有効な候補言語として正規化できない状態 |
+| 正規化済み設定 | validation と normalization を通過し、popup または content 側で安全に利用できる設定値 |
 
 ---
 

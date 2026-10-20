@@ -62,20 +62,7 @@ v2 の設定 UI は、字幕表示に必要な最小の保存設定だけをユ�
 
 ## 3. 用語
 
-| 用語 | 意味 |
-| --- | --- |
-| `primaryLang` | 学習言語の保存設定 |
-| `secondaryLang` | 母国語の保存設定 |
-| 保存設定 | 拡張機能やブラウザを再起動しても再利用する値 |
-| runtime state | 再生中だけメモリ上で使う一時状態 |
-| session state | 現在の再生対象に対する playback session 内だけで使う状態 |
-| layout state | panel の開閉や 7:3 layout 適用など、現在の表示構成に関する一時状態 |
-| language option | popup UI に表示する固定の候補言語 |
-| effective secondary language | `secondaryLang` が未設定のときにブラウザ言語 fallback を適用した、content 側で解決に使う母国語 |
-| browser language fallback | `secondaryLang` 未選択時に runtime で利用するブラウザ言語 |
-| settings store | 設定の読込・保存・検証・正規化を行う `src/settings/settings-store.ts` |
-| 設定未完了 | `primaryLang` が未設定または有効な候補言語として正規化できない状態 |
-| 正規化済み設定 | validation と normalization を通過し、popup または content 側で安全に利用できる設定値 |
+用語は `docs/minimal-panel-architecture.md` の「2. 用語」を正本とする。この文書では再定義しない。
 
 ---
 
@@ -270,8 +257,8 @@ export type StoredSettings = {
 - 現在の `SubtitleBlock[]`
 - 現在表示中の字幕 block
 - panel 内の表示位置
-- session state
-- layout state
+- `UI state`（`extensionEnabled`、`panelOpen`）
+- `layout state`
 - listener / timer / observer / binding の登録状態
 
 ---
@@ -484,14 +471,14 @@ panel open state は保存しないため、起動時は毎回 closed で開始�
 
 ### 11.4 保存しない理由
 
-runtime state、session state、layout state は現在の再生対象、DOM、video、track、panel の存在に依存する一時状態である。
+runtime state は現在の再生対象、DOM、video、track、panel の存在に依存する一時状態である。
 
 これらを保存すると、再起動後や別の再生対象で古い状態を復元してしまい、状態不整合や cleanup 漏れの原因になる。  
 そのため Chrome Storage には、再生対象に依存しないユーザー設定だけを保存する。
 
 ### 11.5 architecture へ委ねる範囲
 
-runtime state、session state、layout state の詳細な保持先と更新責務は本書では定義しない。
+runtime state の詳細な保持先と更新責務は本書では定義しない。
 
 本書で固定するのは、それらを保存設定として `chrome.storage.sync` に保存しないことだけである。  
 詳細な owner、保持単位、cleanup、再初期化責務は architecture 文書の担当範囲とする。
@@ -728,6 +715,6 @@ export type SettingsLoadResult =
 - `primaryLang` 未設定時に content 側が playback session を開始しないことが明記されている
 - popup と `settings-store.ts` の責務境界が明記されている
 - content 側への反映方針が明記されている
-- runtime state、session state、layout state の詳細は architecture の担当範囲であると明記されている
+- runtime state の詳細は architecture の担当範囲であると明記されている
 
 ---
