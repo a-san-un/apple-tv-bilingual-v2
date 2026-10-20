@@ -167,37 +167,9 @@ obvious な処理を行単位で説明するコメントは増やさない。
 
 ## 用語の扱い
 
-この文書では次の用語を前提として使う。
+用語は `docs/minimal-panel-architecture.md` の `## 2. 用語` を正本とする。この文書では同じ用語を、定義を重ねて書かずにそのまま使う。
 
-| 用語 | 意味 |
-| --- | --- |
-| `primaryLang` | 学習言語の設定値 |
-| `secondaryLang` | 母国語の設定値 |
-| primary subtitle | 学習言語として表示する字幕 |
-| secondary subtitle | 母国語として表示する字幕 |
-| subtitle source | 字幕取得と track binding をまとめる窓口 |
-| subtitle track | `TextTrack` を正規化した字幕 track 情報 |
-| truth | UI の正本となる内部データ |
-| `SubtitleBlock` | 時刻、primary 字幕、secondary 字幕を持つ字幕表示単位 |
-| `SubtitleBlock[]` | 字幕 truth の正本となる block 配列 |
-| current / past / future | panel に表示する字幕区分 |
-| panel | 右側字幕 panel |
-| panel host | panel を mount するために拡張が所有する DOM 要素 |
-| ON/OFF toggle | 再生画面下部に置く、拡張機能全体の ON/OFF 制御 |
-| extension enabled state | ON/OFF toggle により切り替わる拡張機能全体の有効状態 |
-| 開閉ボタン | 右側字幕 panel を開閉する UI。ON/OFF toggle とは別物 |
-| panel open state | panel が開いているかどうかの一時的な UI 状態 |
-| 7:3 layout | panel を開いたときに、既存 UI を含む再生画面領域 70%、panel 30% に分ける方針 |
-| available width | 既存 UI を含む再生画面領域と panel の再配置に使う利用可能な横幅 |
-| playback session | 現在の再生対象に対して拡張機能が動く 1 回分の実行単位 |
-| runtime state | 再生中だけメモリ上に持つ一時状態 |
-| 保存設定 | 再起動後も利用する設定値 |
-| cleanup | listener、timer、observer、binding、DOM、state を解放する処理 |
-| owner | resource を登録・解放する責任を唯一持つ module |
-| small store | 最小限の `get / set / subscribe` を持つ軽量な state 管理オブジェクト |
-| readiness | subtitle source を開始してよい状態かを判断する待機条件 |
-| waiting state | `textTracks` の準備待ちとして session-lifecycle が一時的に持つ状態 |
-| `RestartReason` | session の再初期化理由を表す型 |
+実装中に新しい用語が必要になったときは、先に `minimal-panel-architecture.md` へ追加してから、この文書で使う。
 
 ## 依存関係
 

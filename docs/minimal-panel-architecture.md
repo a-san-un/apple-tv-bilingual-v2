@@ -55,7 +55,7 @@ architecture は、責務境界、依存方向、データフロー、playback s
 | panel host | panel を mount するために拡張が所有する DOM 要素 |
 | ON/OFF toggle | 再生画面下部に置く、拡張機能全体の ON/OFF 制御 |
 | extension enabled state | ON/OFF toggle により切り替わる拡張機能全体の有効状態 |
-| panel open state | panel 開閉ボタンにより切り替わる、panel の表示状態 |
+| panel open state | panel 開閉ボタン（以下、開閉ボタン）により切り替わる、panel の表示状態。ON/OFF toggle とは別物 |
 | UI state | `extensionEnabled` と `panelOpen` を持つ runtime 上の UI 意思 |
 | layout state | panel 表示に必要な幅、適用済み style、layout observer / timer を管理する runtime 上の幾何状態 |
 | 7:3 layout | panel を開いたときに、既存 UI を含む再生画面領域 70%、panel 30% に分ける方針 |
@@ -69,6 +69,8 @@ architecture は、責務境界、依存方向、データフロー、playback s
 | restart reason | session を再初期化する理由 |
 | discovery module | resource を所有せず、対象を見つけて返すだけの module |
 | view helper | truth から renderer 向けの読み取り結果を導出する純粋な helper |
+| available width | 既存 UI を含む再生画面領域と panel の再配置に使う利用可能な横幅 |
+| waiting state | `textTracks` の準備待ちとして `session-lifecycle.ts` が一時的に持つ状態 |
 
 ---
 
