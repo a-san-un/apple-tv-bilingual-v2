@@ -181,7 +181,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 4. `subtitles/subtitle-source.ts`、`subtitles/text-track-resolver.ts`
 5. `subtitles/subtitle-block-builder.ts`、`subtitles/subtitle-history.ts`
 6. `panel/panel-host.ts`、`panel/panel-renderer.ts`
-7. `controls/on-off-toggle.ts`、`controls/panel-toggle-button.ts`、`layout/player-layout.ts`
+7. `controls/on-off-toggle.ts`、`controls/panel-open-close-button.ts`、`layout/player-layout.ts`
 8. cleanup、再初期化、SPA 遷移対応
 9. `subtitles/native-menu-sync.ts` など Apple TV+ 固有対応
 10. 自動テスト、手動スモークテスト、不具合修正
@@ -669,7 +669,7 @@ const isSubtitleReady = (video: HTMLVideoElement): boolean =>
 ### 触るファイル
 
 - `src/controls/on-off-toggle.ts`
-- `src/controls/panel-toggle-button.ts`
+- `src/controls/panel-open-close-button.ts`
 - `src/layout/player-layout.ts`
 - `src/ui/ui-state.ts`
 - `src/panel/panel-host.ts`
@@ -686,7 +686,7 @@ const isSubtitleReady = (video: HTMLVideoElement): boolean =>
 - `extensionEnabled` の変更イベントを発火する
 - panel 開閉の責務を持たないようにする
 
-#### `src/controls/panel-toggle-button.ts`
+#### `src/controls/panel-open-close-button.ts`
 
 - panel の開閉ボタンを描画する
 - `panelOpen` の変更イベントを発火する
@@ -745,7 +745,7 @@ const isSubtitleReady = (video: HTMLVideoElement): boolean =>
 - `src/panel/panel-host.ts`
 - `src/layout/player-layout.ts`
 - `src/controls/on-off-toggle.ts`
-- `src/controls/panel-toggle-button.ts`
+- `src/controls/panel-open-close-button.ts`
 - `src/shared/dispose.ts`
 
 ### ファイル単位の作業内容
@@ -782,7 +782,7 @@ export type RestartReason =
 - `native-menu-sync.ts` で native menu binding を解除する
 - `panel-host.ts` で panel DOM を unmount する
 - `player-layout.ts` で layout observer を解除する
-- `on-off-toggle.ts` と `panel-toggle-button.ts` で controls binding を解除する
+- `on-off-toggle.ts` と `panel-open-close-button.ts` で controls binding を解除する
 - `shared/dispose.ts` は disposer が二重実行されない前提を補助する
 
 ### 完了条件

@@ -185,7 +185,7 @@ src/
 ├─ controls/
 │  ├─ on-off-toggle.ts
 │  │  └─ 拡張全体の enabled state を切り替える下部 toggle を扱う
-│  └─ panel-toggle-button.ts
+│  └─ panel-open-close-button.ts
 │     └─ panel open state を切り替える開閉ボタンを扱う
 │
 ├─ layout/
@@ -358,7 +358,7 @@ Apple TV+ 固有 selector や session cleanup 本体も持たない。
 panel open state を直接変更しない。  
 session の stop / restart、panel の mount / unmount、layout の reset も直接実装しない。
 
-### `src/controls/panel-toggle-button.ts`
+### `src/controls/panel-open-close-button.ts`
 
 panel 開閉制御専用とする。
 
@@ -465,7 +465,7 @@ resource owner は必ず1つに限定する。
 - `native-menu-sync.ts` は native menu listener の attach / detach を所有する
 - `player-layout.ts` は layout state、layout style、observer、layout timer の適用・解除を所有する
 - `on-off-toggle.ts` は ON/OFF toggle の DOM と controls binding を所有する
-- `panel-toggle-button.ts` は panel 開閉ボタンの DOM と controls binding を所有する
+- `panel-open-close-button.ts` は panel 開閉ボタンの DOM と controls binding を所有する
 - `ui-state.ts` は UI state とその購読機構を所有する
 
 `session-lifecycle.ts` は個別 resource を直接解除しない。  
@@ -493,7 +493,7 @@ subtitle-history.ts
 panel-host.ts
 panel-renderer.ts
 on-off-toggle.ts
-panel-toggle-button.ts
+panel-open-close-button.ts
 player-layout.ts
 shared/*
 ```
@@ -637,7 +637,7 @@ session-lifecycle.ts が session を生成
   ↓
 ui-state.ts を作成
   ↓
-on-off-toggle.ts / panel-toggle-button.ts を mount
+on-off-toggle.ts / panel-open-close-button.ts を mount
   ↓
 panel-host.ts を mount
   ↓
@@ -1006,18 +1006,18 @@ function mountOnOffToggle(args: {
 }): OnOffToggleBinding;
 ```
 
-### `panel-toggle-button.ts`
+### `panel-open-close-button.ts`
 
 ```ts
-type PanelToggleButtonBinding = {
+type PanelOpenCloseButtonBinding = {
   dispose(): void;
 };
 
-function mountPanelToggleButton(args: {
+function mountPanelOpenCloseButton(args: {
   rootEl: HTMLElement;
   state: ExtensionUiState;
-  onToggle: (open: boolean) => void;
-}): PanelToggleButtonBinding;
+  onOpenChange: (open: boolean) => void;
+}): PanelOpenCloseButtonBinding;
 ```
 
 ### `player-layout.ts`

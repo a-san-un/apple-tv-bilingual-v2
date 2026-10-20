@@ -293,7 +293,7 @@ npm run test
 ## panel 開閉ボタンの確認項目
 
 対象ファイル:
-- `src/controls/panel-toggle-button.ts`
+- `src/controls/panel-open-close-button.ts`
 - `src/ui/ui-state.ts`
 - `src/layout/player-layout.ts`
 
@@ -317,7 +317,7 @@ npm run test
 - 連続操作でも二重描画やレイアウト破綻が起きない。
 
 実施タイミング:
-- panel-toggle-button 実装直後
+- panel-open-close-button 実装直後
 - layout 接続直後
 - panel host / renderer 修正時
 
@@ -500,7 +500,7 @@ small integration test で確認する項目:
 - `src/subtitles/subtitle-source.ts`
 - `src/panel/panel-host.ts`
 - `src/controls/on-off-toggle.ts`
-- `src/controls/panel-toggle-button.ts`
+- `src/controls/panel-open-close-button.ts`
 
 手動スモークで確認する項目:
 - [ ] playback root disconnect 時に restart request が発行される。
@@ -529,7 +529,7 @@ small integration test で確認する項目:
 - `src/panel/panel-host.ts`
 - `src/subtitles/subtitle-source.ts`
 - `src/controls/on-off-toggle.ts`
-- `src/controls/panel-toggle-button.ts`
+- `src/controls/panel-open-close-button.ts`
 
 自動テストで確認したい項目:
 - disposer 登録順に依存しない安全な cleanup ができること。
@@ -715,7 +715,7 @@ small integration test で確認する項目:
 対象:
 - `src/ui/ui-state.ts`
 - `src/controls/on-off-toggle.ts`
-- `src/controls/panel-toggle-button.ts`
+- `src/controls/panel-open-close-button.ts`
 
 追加するテスト:
 - `ui-state.ts` の unit test

@@ -85,7 +85,7 @@
 
 ### panel 開閉ボタン
 
-- `src/controls/panel-toggle-button.ts` は panel 開閉ボタンの描画と操作だけを扱う
+- `src/controls/panel-open-close-button.ts` は panel 開閉ボタンの描画と操作だけを扱う
 - panel 開閉ボタンは `src/ui/ui-state.ts` の panel open state だけを扱う
 - ON/OFF toggle とは別責務とする
 - 注入先は panel host 配下、controls 近傍、playback root 直下の独自 host を候補とする
@@ -153,7 +153,7 @@
 | `src/panel/panel-host.ts` | panel host の生成・mount・unmount |
 | `src/layout/player-layout.ts` | 7:3 layout、controls 補正、layout observer |
 | `src/controls/on-off-toggle.ts` | ON/OFF toggle の描画と操作 |
-| `src/controls/panel-toggle-button.ts` | panel 開閉ボタンの描画と操作 |
+| `src/controls/panel-open-close-button.ts` | panel 開閉ボタンの描画と操作 |
 | `src/ui/ui-state.ts` | enabled state と panel open state の runtime 管理 |
 
 ## 6. 未確認事項
