@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Apple TV+ Bilingual Subtitles v2",
+  "version": "0.1.0",
+  "description": "Bilingual subtitle panel extension for Apple TV+.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://tv.apple.com/*"],
+  "action": {
+    "default_title": "Apple TV+ Bilingual Subtitles v2"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://tv.apple.com/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

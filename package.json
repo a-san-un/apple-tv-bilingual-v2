@@ -1,22 +1,27 @@
 {
   "name": "apple-tv-bilingual-v2",
   "version": "0.1.0",
-  "description": "",
-  "main": "index.js",
-  "directories": {
-    "doc": "docs"
-  },
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc",
-    "check": "tsc --noEmit"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
+  "description": "Apple TV+ bilingual subtitles Chrome extension v2",
   "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "esbuild src/content/index.ts --bundle --format=esm --platform=browser --target=chrome120 --outfile=dist/content-script.js --watch",
+    "build": "npm run clean && esbuild src/content/index.ts --bundle --format=esm --platform=browser --target=chrome120 --outfile=dist/content-script.js && cp manifest.json dist/manifest.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run --passWithNoTests"
+  },
   "devDependencies": {
-    "typescript": "^7.0.2"
+    "@eslint/js": "^9.16.0",
+    "@types/chrome": "^0.0.299",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.16.0",
+    "globals": "^15.13.0",
+    "prettier": "^3.4.1",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.16.0",
+    "vitest": "^2.1.5"
   }
 }
