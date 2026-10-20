@@ -378,7 +378,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
   - `ExtensionUiState`
   - `PlayerLayoutState`
   - `UiStateStore`
-  - `PlaybackRoot`
+  - `PlaybackTarget`
   - `SessionState`
   - `WaitingState`
   - `RestartReason`
