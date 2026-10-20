@@ -24,6 +24,8 @@
 
 DOM の selector、実測値、時系列、未確認事項はこの文書へ重複記載しない。
 
+- 要件・MVP 範囲: `docs/product-requirements.md`
+- 設定仕様・保存境界: `docs/settings-spec.md`
 - 実装判断: `docs/apple-tv-dom-structure.md`
 - 詳細観測: `docs/apple-tv-dom-observations.md`
 - module 境界・型・cleanup 所有権: `docs/minimal-panel-architecture.md`
