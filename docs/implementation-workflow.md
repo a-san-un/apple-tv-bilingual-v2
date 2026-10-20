@@ -71,7 +71,7 @@ DOM の selector、実測値、時系列、未確認事項はこの文書へ重�
 
 - TypeScript
 - Chrome Extensions Manifest V3
-- bundler は `esbuild` または `Vite`
+- bundler は `esbuild`（Phase 0 で確定。最小構成と設定の読みやすさを優先した）
 - Vitest
 - ESLint
 - Prettier
@@ -232,8 +232,8 @@ obvious な処理を行単位で説明するコメントは増やさない。
 - `tsconfig.json`
 - `manifest.json`
 - `vitest.config.ts`
-- `.eslintrc.*`
-- `.prettierrc*`
+- `eslint.config.js`
+- `.prettierrc.json`
 - 必要なら bundler 設定ファイル
 - 参照: 既存版の `content.js`
 - 参照: 既存版の `cue-controller.js`
@@ -259,7 +259,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 
 #### 開発基盤の初期決定
 
-- bundler を `esbuild` または `Vite` から決める
+- bundler は `esbuild` に決定済み（Phase 0 完了時点）
 - 判定は、entry の扱いやすさ、watch の軽さ、Manifest V3 との相性、設定の読みやすさを基準にする
 - 未決定のまま Phase 1 へ進まない
 
@@ -283,12 +283,12 @@ obvious な処理を行単位で説明するコメントは増やさない。
 - unit test をすぐ追加できる最小設定を作る
 - `shared/`、`settings/`、`subtitles/` の pure logic を先に test できる形にする
 
-#### `.eslintrc.*`
+#### `eslint.config.js`
 
 - TypeScript 向け lint 設定を置く
 - obvious な style 議論ではなく、責務逸脱、未使用、危険な any、曖昧な import を早めに検出できる設定を優先する
 
-#### `.prettierrc*`
+#### `.prettierrc.json`
 
 - フォーマット規約を固定する
 - コメントや JSDoc を含めて diff が追いやすい状態を作る
@@ -399,6 +399,8 @@ obvious な処理を行単位で説明するコメントは増やさない。
 - `src/popup/popup.html`
 - `src/popup/popup.css`
 - `src/settings/settings-store.ts`
+- `package.json`（`dev` / `build` の esbuild に popup の entry を追加する）
+- `manifest.json`（`action.default_popup` を追加する）
 - 必要なら `src/shared/types.ts`
 
 ### ファイル単位の作業内容

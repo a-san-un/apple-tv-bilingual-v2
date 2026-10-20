@@ -686,69 +686,123 @@ small integration test で確認する項目:
 
 ## 実装フェーズごとのテスト追加方針
 
-### フェーズ 1: settings と型
+フェーズ番号は `docs/implementation-workflow.md` の Phase に合わせる。
+
+### Phase 0: 実装準備
+
+対象:
+- `package.json`
+- `tsconfig.json`
+- `vitest.config.ts`
+- `eslint.config.js`
+
+追加するテスト:
+- build、typecheck、lint、test が空実行で通ること
+
+### Phase 1: 共通型、dispose helper、設定保存
 
 対象:
 - `src/shared/types.ts`
+- `src/shared/dispose.ts`
 - `src/settings/settings-store.ts`
 
 追加するテスト:
 - typecheck
 - settings の unit test
+- disposer の unit test
+
+### Phase 2: popup UI と設定反映
+
+対象:
+- `src/popup/index.ts`
+- `src/settings/settings-store.ts`
+
+追加するテスト:
+- `settings-store.ts` の unit test 更新
 - popup 設定の最小手動確認
 
-### フェーズ 2: resolver と block builder
+### Phase 3: UI state、playback root、session lifecycle の土台
+
+対象:
+- `src/ui/ui-state.ts`
+- `src/content/playback-root.ts`
+- `src/content/session-lifecycle.ts`
+
+追加するテスト:
+- `ui-state.ts` の unit test
+- session 開始停止まわりの small integration test
+- `textTracks` readiness の手動スモーク
+
+### Phase 4: subtitle source と text-track resolver
 
 対象:
 - `src/subtitles/text-track-resolver.ts`
+- `src/subtitles/subtitle-source.ts`
+
+追加するテスト:
+- resolver の unit test
+- settings と resolver の small integration test
+- 再生、一時停止、字幕切替の手動スモーク
+
+### Phase 5: SubtitleBlock[] と history
+
+対象:
 - `src/subtitles/subtitle-block-builder.ts`
 - `src/subtitles/subtitle-history.ts`
 
 追加するテスト:
-- resolver の unit test
 - block builder の unit test
 - history の unit test
-- settings と resolver の small integration test
 
-### フェーズ 3: ui-state と controls
-
-対象:
-- `src/ui/ui-state.ts`
-- `src/controls/on-off-toggle.ts`
-- `src/controls/panel-open-close-button.ts`
-
-追加するテスト:
-- `ui-state.ts` の unit test
-- controls と ui-state の small integration test
-- ON/OFF と panel 開閉の手動スモーク
-
-### フェーズ 4: panel と layout
+### Phase 6: panel host と panel renderer
 
 対象:
 - `src/panel/panel-host.ts`
 - `src/panel/panel-renderer.ts`
+
+追加するテスト:
+- block / history / renderer 接続の small integration test
+- panel 表示の手動スモーク
+
+### Phase 7: ON/OFF toggle、開閉ボタン、layout 適用
+
+対象:
+- `src/controls/on-off-toggle.ts`
+- `src/controls/panel-open-close-button.ts`
 - `src/layout/player-layout.ts`
 
 追加するテスト:
 - layout の unit test または small integration test
-- block / history / renderer 接続の small integration test
-- panel 表示と 7:3 layout の手動スモーク
+- controls と ui-state の small integration test
+- ON/OFF と panel 開閉の手動スモーク
+- 7:3 layout の手動スモーク
 
-### フェーズ 5: session と Apple TV+ 実画面接続
+### Phase 8: restart、cleanup、SPA 遷移
 
 対象:
-- `src/content/playback-root.ts`
 - `src/content/session-lifecycle.ts`
-- `src/subtitles/subtitle-source.ts`
-- `src/subtitles/native-menu-sync.ts`
+- 関連する subtitles / panel / layout / controls module
 
 追加するテスト:
-- disposer / cleanup の unit test
-- session 開始停止まわりの small integration test
-- `textTracks` readiness の手動スモーク
-- 再生、一時停止、seek、字幕切替の手動スモーク
-- native subtitle menu 同期の手動スモーク
+- cleanup の unit test
+- seek の手動スモーク
 - video replacement、SPA 遷移、再初期化、cleanup の手動スモーク
+
+### Phase 9: native menu 同期
+
+対象:
+- `src/subtitles/native-menu-sync.ts`
+- `src/subtitles/text-track-resolver.ts`
+
+追加するテスト:
+- native subtitle menu 同期の手動スモーク
+
+### Phase 10: テスト、自動化、スモーク、不具合修正
+
+追加するテスト:
+- 回帰確認項目の一式実施
+- 手動スモークテスト最小セットの実施
+
 
 ## 手動スモークテスト最小セット
 

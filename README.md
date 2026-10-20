@@ -7,11 +7,11 @@ v2 では、右側字幕 panel を中核 UI とした最小構成を前提に、
 
 ## 現在の状態
 
-現在は、実装前の設計整理フェーズです。
+現在は、Phase 0（開発基盤の整備）が完了し、Phase 1 に進む段階です。
 
 - 正本文書 7 本を整備済み
 - `src/` 配下には実装用の空ファイルを配置済み
-- TypeScript の最小設定と `build` / `check` スクリプトを用意済み
+- 開発基盤（esbuild、TypeScript、ESLint、Prettier、Vitest）と、検証用 npm scripts を用意済み
 
 ## 目的
 
@@ -74,26 +74,26 @@ src/
   settings/
   shared/
   subtitles/
+  ui/
 ```
 
 ## 開発メモ
 
 現時点の npm scripts:
 
+- `npm run dev`  
+  esbuild で content script を watch ビルドする
 - `npm run build`  
-  TypeScript をコンパイルする
-- `npm run check`  
-  TypeScript の型チェックを行う
+  `dist/` を作り直し、esbuild で bundle して `manifest.json` をコピーする
+- `npm run typecheck`  
+  TypeScript の型チェックを行う（`npm run check` も同じ）
+- `npm run lint`  
+  ESLint を実行する
+- `npm run test`  
+  Vitest を実行する（テストファイルがなくても成功する）
 
-現在の `package.json` では `test` は未設定です。  
-テスト導入方針は `docs/testing-checklist.md` と `docs/implementation-workflow.md` を参照してください。
+テスト方針は `docs/testing-checklist.md` と `docs/implementation-workflow.md` を参照してください。
 
 ## 次の作業
 
-実装を始める前に、まずは `docs/implementation-workflow.md` の Phase 0 に従って、次を確定する想定です。
-
-- bundler の選定
-- build / watch 導線の整理
-- Manifest V3 前提のエントリ構成
-- 共有型と dispose helper の土台作成
-- settings store と popup 側の最小導線
+`docs/implementation-workflow.md` の Phase 1 に従って、共有型、dispose helper、設定保存の土台を実装します。
