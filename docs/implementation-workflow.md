@@ -149,14 +149,52 @@ TypeScript に不慣れでも、各 module の役割、依存、session と clea
 
 export する関数、型、クラスには JSDoc を付ける。
 
-必要に応じて、次を記載する。
+JSDoc は、呼び出し側が API を誤用しないための公開契約を短く示す。
+行コメントは実装上の「なぜ」を補い、JSDoc は API の役割・入力・出力・責務を説明する。
 
-- 何をするか
-- 引数
-- 戻り値
-- 前提条件
-- cleanup の責務
-- 失敗時の扱い
+export 関数には、少なくとも何をするかを書く。
+次に当てはまる場合は、必要なタグを追加する。
+
+- 引数の意味、許容値、null / undefined の扱い、呼び出し側の前提が自明でない場合は、`@param` を書く
+- 戻り値の意味、所有権、後続の利用方法が自明でない場合は、`@returns` を書く
+- 要素未検出など、呼び出し側が扱うべき失敗条件で例外を投げる場合は、`@throws` または本文で失敗条件を書く
+- disposer、listener 解除関数、observer 停止関数など cleanup に関係する値を返す場合は、cleanup の owner と、呼び出し側が保持・実行する責務を書く
+
+単純な getter、名前と型だけで意味が明確な引数・戻り値、機械的な型 alias には、
+`@param` や `@returns` を無理に付けない。
+JSDoc を仕様書の転載にせず、module 境界で判断を必要とする情報を優先する。
+
+例:
+
+```ts
+/**
+ * 複数の cleanup を 1 つの disposer に合成する。
+ *
+ * @param disposeFns 合成する cleanup。undefined は無視する。
+ * @returns すべての cleanup を登録の逆順で 1 回だけ実行する disposer。
+ */
+export function combineDisposers(
+  ...disposeFns: Array<DisposeFn | undefined>
+): DisposeFn {
+  // ...
+}
+
+/**
+ * 必須要素を取得する。
+ *
+ * @param root 検索を開始する DOM 範囲。
+ * @param selector 検索する CSS selector。
+ * @returns 見つかった要素。
+ * @throws {Error} selector に一致する要素がなく、後続処理を継続できない場合。
+ */
+export const requireElement = <T extends Element>(
+  root: ParentNode,
+  selector: string,
+): T => {
+  // ...
+};
+```
+
 
 ### 行コメント
 
