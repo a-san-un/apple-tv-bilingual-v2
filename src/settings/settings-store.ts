@@ -5,53 +5,10 @@
 
 import type { ExtensionSettings, LanguageCode, StoredSettings } from '../shared/types';
 
+import { isSupportedLanguageCode } from './language-options';
+
 const STORAGE_KEY_PRIMARY_LANG = 'primaryLang';
 const STORAGE_KEY_SECONDARY_LANG = 'secondaryLang';
-
-const SUPPORTED_LANGUAGE_CODES = [
-  'ar',
-  'cs',
-  'da',
-  'de',
-  'el',
-  'en',
-  'en-AU',
-  'en-CA',
-  'en-GB',
-  'en-US',
-  'es',
-  'es-419',
-  'es-ES',
-  'fi',
-  'fr',
-  'fr-CA',
-  'hi',
-  'hu',
-  'id',
-  'it',
-  'ja',
-  'ko',
-  'ms',
-  'nl',
-  'no',
-  'pl',
-  'pt',
-  'pt-BR',
-  'pt-PT',
-  'ro',
-  'sk',
-  'sv',
-  'th',
-  'tr',
-  'uk',
-  'vi',
-  'yue',
-  'zh',
-  'zh-Hans',
-  'zh-Hant'
-] as const satisfies readonly LanguageCode[];
-
-const SUPPORTED_LANGUAGE_CODE_SET = new Set<LanguageCode>(SUPPORTED_LANGUAGE_CODES);
 
 /** storage 読込・書込失敗を呼び出し元へ伝える最小原因コード。 */
 export type SettingsStoreErrorCause = 'storage-read-failed' | 'storage-write-failed';
@@ -114,25 +71,6 @@ export type StorageAreaLike = {
   ): void;
   set(items: Record<string, unknown>, callback?: () => void): void;
 };
-
-/**
- * popup 候補一覧と validation に使う対応言語コード一覧を返す。
- *
- * @returns 順序固定の対応言語コード一覧。
- */
-export function getSupportedLanguageCodes(): readonly LanguageCode[] {
-  return SUPPORTED_LANGUAGE_CODES;
-}
-
-/**
- * 値が保存可能な言語コードかを判定する。
- *
- * @param value 判定対象の値。
- * @returns 対応一覧に含まれる言語コードなら true。
- */
-export function isSupportedLanguageCode(value: unknown): value is LanguageCode {
-  return typeof value === 'string' && SUPPORTED_LANGUAGE_CODE_SET.has(value);
-}
 
 /**
  * storage 値や保存要求値を、未完了を含みうる設定 shape に正規化する。

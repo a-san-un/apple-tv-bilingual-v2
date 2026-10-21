@@ -4,10 +4,9 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
+import { getSupportedLanguageCodes, isSupportedLanguageCode } from './language-options';
 import {
   classifySettings,
-  getSupportedLanguageCodes,
-  isSupportedLanguageCode,
   loadSettings,
   normalizeStoredSettings,
   saveSettings,

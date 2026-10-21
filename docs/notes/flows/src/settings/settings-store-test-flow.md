@@ -4,13 +4,13 @@
 
 ```mermaid
 flowchart TD
-  Start["vitest: settings-store.test.ts"] --> Import["settings-store の公開 API を import"]
+  Start["vitest: settings-store.test.ts"] --> Import["settings-store / language-options の公開 API を import"]
 
   Import --> FakeStorage["createStorageArea()<br/>fake StorageAreaLike を作る"]
 
   FakeStorage --> Tests["12 個の unit test"]
 
-  Tests --> LanguageTests["言語候補・判定"]
+  Tests --> LanguageTests["language-options の言語候補・判定"]
   LanguageTests --> Supported["getSupportedLanguageCodes()<br/>en / ja を含む"]
   LanguageTests --> ValidateCode["isSupportedLanguageCode()<br/>en は true、空文字 / xx は false"]
 
