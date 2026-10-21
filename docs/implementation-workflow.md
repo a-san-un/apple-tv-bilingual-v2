@@ -573,19 +573,26 @@ obvious な処理を行単位で説明するコメントは増やさない。
 - thin coordinator を維持したまま、起動入口から session 開始前までの骨格を作る
 - `playback-root.ts` を root / video 解決専用に保つ
 
-### 触るファイル
+### Phase 3-A: UI state、playback root、PlaybackTarget snapshot
 
-- `src/content/index.ts`
-- `src/content/playback-root.ts`
-- `src/content/session-lifecycle.ts`
+#### 目的
+
+- runtime UI state の最小 store を固定する
+- playback root と current video の解決を、session lifecycle から分離する
+- `PlaybackTarget` snapshot と比較 API を先に用意し、video identity の変化を後続の lifecycle が検出できるようにする
+
+#### 触るファイル
+
 - `src/ui/ui-state.ts`
+- `src/content/playback-root.ts`
 - `src/shared/types.ts`
-- `src/shared/dispose.ts`
+- `src/ui/ui-state.test.ts`
+- `src/content/playback-root.test.ts`
 - 必要なら `src/shared/log.ts`
 
-### ファイル単位の作業内容
+#### ファイル単位の作業内容
 
-#### `src/ui/ui-state.ts`
+##### `src/ui/ui-state.ts`
 
 - small store を実装する
 - 少なくとも次を持つ
@@ -594,15 +601,69 @@ obvious な処理を行単位で説明するコメントは増やさない。
   - `setPanelOpen(open)`
   - `subscribe(listener)`
 - 初期値は `extensionEnabled = false`、`panelOpen = false` とする
+- 保存設定を持ち込まず、runtime UI state だけを扱う
 
-#### `src/content/playback-root.ts`
+##### `src/content/playback-root.ts`
 
 - playback root と `HTMLVideoElement` の解決だけを担当する
-- root / video / 注入候補 / layout 基準候補をまとめた snapshot を返せる形にする
+- root / video / 注入候補 / layout 基準候補をまとめた `PlaybackTarget` snapshot を返せる形にする
+- snapshot を比較し、video identity の変化を検出できる API を提供する
 - 同じ playback root を維持したまま video が差し替わる可能性を前提にする
 - readiness 待機、retry、polling、旧待機停止は持たない
 
-#### `src/content/session-lifecycle.ts`
+##### `src/shared/types.ts`
+
+- `PlaybackTarget`、`PlaybackTargetSnapshot`、UI state に必要な共有型を、3-A の実装に必要な最小範囲で確定する
+- session lifecycle 固有の待機・cleanup の実装詳細は持ち込まない
+
+##### `src/ui/ui-state.test.ts`
+
+- 初期値が `extensionEnabled = false`、`panelOpen = false` であることを確認する
+- 各 setter が state を更新することを確認する
+- `subscribe()` が更新通知を受け取り、unsubscribe 後は通知されないことを確認する
+
+##### `src/content/playback-root.test.ts`
+
+- root / video を含む snapshot を構築できることを確認する
+- 同一 video の snapshot は同一 target と判定できることを確認する
+- root が同一でも video identity が変化した場合に、別 target と判定できることを確認する
+- 解決ロジックの純粋部分を対象にし、readiness 待機や retry は扱わない
+
+#### 完了条件
+
+- `ui-state.ts` が保存設定と分離された small store として使える
+- `PlaybackTarget` snapshot を構築できる
+- video identity の変化を snapshot 比較で検出できる
+- `playback-root.ts` に readiness 待機、retry、polling、旧待機停止が入っていない
+- `ui-state.ts` と `playback-root.ts` の unit test が通る
+
+#### 検証タイミング
+
+- 3-A 実装後に typecheck、lint、unit test を実行する
+- `ui-state.ts` の初期値、更新、subscribe / unsubscribe を確認する
+- `playback-root.ts` の snapshot 構築と video identity 比較を確認する
+- content script の起動や readiness 待機の手動確認は 3-B で行う
+
+### Phase 3-B: session lifecycle と content coordinator
+
+#### 目的
+
+- readiness 待機、retry、旧待機停止、session dispose の owner を `session-lifecycle.ts` に固定する
+- `content/index.ts` を settings 読込、target 解決、lifecycle 起動、top-level error handling だけに保つ
+- video 差し替え時に旧待機と旧 listener を確実に停止できる session の骨格を作る
+
+#### 触るファイル
+
+- `src/content/session-lifecycle.ts`
+- `src/content/index.ts`
+- `src/shared/types.ts`
+- `src/shared/dispose.ts`
+- `src/content/session-lifecycle.test.ts`
+- 必要なら `src/shared/log.ts`
+
+#### ファイル単位の作業内容
+
+##### `src/content/session-lifecycle.ts`
 
 - session の start / stop / dispose の骨格を作る
 - readiness 待機、retry、旧待機停止をここが所有する
@@ -615,35 +676,52 @@ const isSubtitleReady = (video: HTMLVideoElement): boolean =>
   video.textTracks.length > 0;
 ```
 
-- playback target snapshot を比較し、video identity の変化を検出できるようにする
+- 3-A で用意した playback target snapshot を比較し、video identity の変化を検出する
 - readiness 待機中に video が差し替わった場合は、旧待機と旧 listener を dispose してから新 video を監視する
 - `RestartReason` の型を導入し、再初期化理由を後続フェーズでも共有できるようにする
 - session stop 時に登録済み disposer を一度だけ実行する土台を作る
 
-#### `src/content/index.ts`
+##### `src/content/index.ts`
 
-- settings 読込
-- playback root 解決
-- session lifecycle 起動
-- top-level error handling
-  だけを担当させる
-- polling、DOM observer の詳細、readiness retry の実装詳細をここへ置かない
+- settings 読込、playback root 解決、session lifecycle 起動、top-level error handling だけを担当する
+- polling、DOM observer の詳細、readiness retry の実装詳細を置かない
+- 3-A の `PlaybackTarget` snapshot と 3-B の lifecycle を接続する薄い coordinator に留める
 
-### 完了条件
+##### `src/shared/types.ts`
+
+- `WaitingState`、`RestartReason`、session lifecycle の公開境界に必要な共有型を最小範囲で確定する
+- source、renderer、panel の後続責務を先取りしない
+
+##### `src/content/session-lifecycle.test.ts`
+
+- `textTracks.length === 0` を waiting state として扱い、terminal failure にしないことを確認する
+- ready な video で次の session 開始へ進めることを確認する
+- readiness 待機中に video identity が変化した場合、旧待機と旧 listener を停止することを確認する
+- stop / dispose を複数回呼んでも cleanup が一度だけ実行されることを確認する
+
+#### 完了条件
 
 - video が存在しても `textTracks.length === 0` の間は subtitle source を開始しない
 - `textTracks.length === 0` を error / terminal failure にしない
 - readiness 待機中に video が差し替わったら古い待機と listener を停止できる
 - ready な新 video を検出したら次の session 開始へ進める
 - `content/index.ts` に polling や DOM observer の詳細が入っていない
+- `session-lifecycle.ts` と `content/index.ts` の責務境界が保たれている
 
-### 検証タイミング
+#### 検証タイミング
 
-- Phase 3 実装後に typecheck、lint
-- `ui-state.ts` の unit test を追加
-- `session-lifecycle.ts` の readiness 判定、waiting state、target snapshot 比較の test を追加
-- `playback-root.ts` は解決ロジックの純粋部分を test する
-- content script がクラッシュせず起動し、未 ready video を待機扱いできることを手動確認する
+- 3-B 実装後に typecheck、lint、unit test を実行する
+- `session-lifecycle.ts` の readiness 判定、waiting state、target snapshot 比較、旧待機停止、dispose を確認する
+- content script がクラッシュせず起動し、未 ready video を waiting state として扱えることを手動確認する
+- video 差し替え時に旧待機と旧 listener が残らず、新 video の監視へ移ることを手動確認する
+
+### 全体完了条件
+
+- video が存在しても `textTracks.length === 0` の間は subtitle source を開始しない
+- `textTracks.length === 0` を error / terminal failure にしない
+- readiness 待機中に video が差し替わったら古い待機と listener を停止できる
+- ready な新 video を検出したら次の session 開始へ進める
+- `content/index.ts` に polling や DOM observer の詳細が入っていない
 
 ## Phase 4: subtitle source と text-track resolver
 
