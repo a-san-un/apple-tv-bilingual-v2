@@ -691,7 +691,7 @@ export type SettingsLoadResult =
 | ファイル | 責務 |
 | --- | --- |
 | `src/popup/popup.html` | 学習言語 / 母国語の入力 UI |
-| `src/popup/popup.ts` | popup の入力制御、保存要求、表示更新 |
+| `src/popup/index.ts` | popup の入力制御、保存要求、表示更新 |
 | `src/settings/settings-store.ts` | 保存設定の読込・保存・検証・正規化 |
 | `src/shared/types.ts` | `StoredSettings` などの共通型 |
 | `src/subtitles/text-track-resolver.ts` | 保存設定を受けた実際の track 解決 |

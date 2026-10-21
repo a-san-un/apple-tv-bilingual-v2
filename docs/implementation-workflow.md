@@ -456,57 +456,110 @@ obvious な処理を行単位で説明するコメントは増やさない。
 
 ## Phase 2: popup UI と設定反映
 
-### 目的
+### Phase 2-A: popup の build 組み込みと最小 UI 骨組み
 
-- 学習言語と母国語の設定変更を、最小 UI で end-to-end に通す
-- content 側に入る前に、保存設定の入口を安定させる
+#### 目的
 
-### 触るファイル
+- popup を action から開ける状態にする
+- 学習言語と母国語の入力 UI の骨組みを最小構成で置く
+- content 側に入る前に、popup 固有 UI を独立して動かせるようにする
+
+#### 触るファイル
 
 - `src/popup/index.ts`
 - `src/popup/popup.html`
 - `src/popup/popup.css`
-- `src/settings/settings-store.ts`
 - `package.json`（`dev` / `build` の esbuild に popup の entry を追加する）
 - `manifest.json`（`action.default_popup` を追加する）
-- 必要なら `src/shared/types.ts`
 
-### ファイル単位の作業内容
+#### ファイル単位の作業内容
 
-#### `src/popup/index.ts`
+##### `src/popup/index.ts`
 
-- `primaryLang` と `secondaryLang` の入力 UI を結線する
-- 保存前バリデーションを入れる
-- `primaryLang === secondaryLang` を禁止する
-- `secondaryLang` 未選択を許容する
+- popup の DOM 初期化を行う
+- 学習言語と母国語の入力 UI を最小構成で結線する
+- 言語候補一覧を select に描画する
 - content 側の track 解決ロジックは持ち込まない
+- 保存、初期読込、バリデーションはまだ持ち込まない
 
-#### `src/popup/popup.html`
+##### `src/popup/popup.html`
 
 - MVP に必要な 2 項目だけを置く
 - 学習言語必須、母国語任意が分かる構成にする
+- 保存ボタンとステータス領域を置く
 - 過剰な設定項目は増やさない
 
-#### `src/popup/popup.css`
+##### `src/popup/popup.css`
 
 - 最小の可読性だけ整える
-- 将来の見た目調整はこのフェーズで追わない
+- 将来の見た目調整はこの段階で追わない
 
-#### `src/settings/settings-store.ts`
+##### `package.json`
+
+- popup entry を build / dev に組み込む
+- popup の HTML / CSS を `dist/popup/` に出力する
+
+##### `manifest.json`
+
+- `action.default_popup` を登録する
+
+#### 完了条件
+
+- unpacked extension を再読み込みすると action から popup を開ける
+- popup にタイトル、学習言語、母国語、保存ボタン、ステータス領域が表示される
+- popup の build 成果物が `dist/` に含まれる
+- content 側未実装でも popup の UI 骨組み単体は確認できる
+
+#### 検証タイミング
+
+- popup 骨組み実装直後に手動確認
+- あわせて typecheck、lint、build
+
+### Phase 2-B: popup の保存・読込・validation
+
+#### 目的
+
+- 学習言語と母国語の設定変更を popup から保存できるようにする
+- popup 起動時の初期読込と保存後の再表示を安定させる
+- content 側に入る前に、保存設定の入口を安定させる
+
+#### 触るファイル
+
+- `src/popup/index.ts`
+- `src/settings/settings-store.ts`
+- `src/settings/settings-store.test.ts`
+- 必要なら `src/shared/types.ts`
+
+#### ファイル単位の作業内容
+
+##### `src/popup/index.ts`
+
+- `primaryLang` と `secondaryLang` の入力 UI を保存処理へ結線する
+- 保存前バリデーションを入れる
+- `primaryLang === secondaryLang` を禁止する
+- `secondaryLang` 未選択を許容する
+- 起動時の初期読込と保存後のステータス表示を行う
+- content 側の track 解決ロジックは持ち込まない
+
+##### `src/settings/settings-store.ts`
 
 - popup から使いやすい API に調整する
 - 保存後の再読込や初期表示の流れを確認する
 
-### 完了条件
+##### `src/settings/settings-store.test.ts`
+
+- popup 保存経路に必要な validation と正規化の test を更新する
+
+#### 完了条件
 
 - popup から `primaryLang` と `secondaryLang` を保存できる
 - 再度 popup を開くと前回設定が読める
 - 同一言語の保存を防げる
 - content 側未実装でも設定経路単体は完成している
 
-### 検証タイミング
+#### 検証タイミング
 
-- popup 実装直後に手動確認
+- 保存実装直後に手動確認
 - あわせて typecheck、lint
 - `settings-store.ts` の test を更新
 - content 側へ進む前に保存スキーマが stable かを確認する
