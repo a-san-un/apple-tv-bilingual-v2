@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Apple TV+ Bilingual Subtitles</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="popup" aria-labelledby="popup-title">
+      <!-- popup の目的と最小構成を示す導入領域。 -->
+      <header class="popup__header">
+        <p class="popup__eyebrow">Apple TV+</p>
+        <h1 id="popup-title" class="popup__title">Bilingual Subtitles</h1>
+        <p class="popup__description">字幕の学習言語と母国語を設定してください。</p>
+      </header>
+
+      <!-- 入力欄の骨組みだけを置き、保存処理はまだ結び付けない。 -->
+      <form class="popup__form">
+        <label class="field">
+          <span class="field__label">学習言語</span>
+          <select class="field__control" data-role="primary-lang" aria-label="学習言語"></select>
+        </label>
+
+        <label class="field">
+          <span class="field__label">母国語</span>
+          <select class="field__control" data-role="secondary-lang" aria-label="母国語"></select>
+        </label>
+
+        <button type="button" class="popup__save">保存</button>
+      </form>
+
+      <!-- 保存未実装の段階差分も含めて短い案内を表示する領域。 -->
+      <p class="popup__status" data-role="status" aria-live="polite"></p>
+    </main>
+
+    <script type="module" src="./index.js"></script>
+  </body>
+</html>

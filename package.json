@@ -5,8 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "esbuild src/content/index.ts --bundle --format=esm --platform=browser --target=chrome120 --outfile=dist/content-script.js --watch",
-    "build": "npm run clean && esbuild src/content/index.ts --bundle --format=esm --platform=browser --target=chrome120 --outfile=dist/content-script.js && cp manifest.json dist/manifest.json",
+    "dev": "npm run clean && mkdir -p dist/popup && cp src/popup/popup.html dist/popup/popup.html && cp src/popup/popup.css dist/popup/popup.css && cp manifest.json dist/manifest.json && esbuild src/content/index.ts --bundle --format=esm --platform=browser --target=chrome120 --outfile=dist/content-script.js --watch & esbuild src/popup/index.ts --bundle --format=esm --platform=browser --target=chrome120 --outfile=dist/popup/index.js --watch & wait",
+    "build": "npm run clean && mkdir -p dist/popup && esbuild src/content/index.ts --bundle --format=esm --platform=browser --target=chrome120 --outfile=dist/content-script.js && esbuild src/popup/index.ts --bundle --format=esm --platform=browser --target=chrome120 --outfile=dist/popup/index.js && cp manifest.json dist/manifest.json && cp src/popup/popup.html dist/popup/popup.html && cp src/popup/popup.css dist/popup/popup.css",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck",
