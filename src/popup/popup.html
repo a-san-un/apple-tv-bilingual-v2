@@ -12,10 +12,10 @@
       <header class="popup__header">
         <p class="popup__eyebrow">Apple TV+</p>
         <h1 id="popup-title" class="popup__title">Bilingual Subtitles</h1>
-        <p class="popup__description">字幕の学習言語と母国語を設定してください。</p>
+        <p class="popup__description">字幕の学習言語と母国語を設定してください。</p>
       </header>
 
-      <!-- 入力欄の骨組みだけを置き、保存処理はまだ結び付けない。 -->
+      <!-- 入力欄の骨組みだけを置き、保存処理は popup script 側で結び付ける。 -->
       <form class="popup__form">
         <label class="field">
           <span class="field__label">学習言語</span>
@@ -27,10 +27,9 @@
           <select class="field__control" data-role="secondary-lang" aria-label="母国語"></select>
         </label>
 
-        <button type="button" class="popup__save">保存</button>
+        <button type="button" class="popup__save" data-role="save">保存</button>
       </form>
 
-      <!-- 保存未実装の段階差分も含めて短い案内を表示する領域。 -->
       <p class="popup__status" data-role="status" aria-live="polite"></p>
     </main>
 

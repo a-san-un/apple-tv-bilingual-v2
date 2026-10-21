@@ -13,6 +13,9 @@ const STORAGE_KEY_SECONDARY_LANG = 'secondaryLang';
 /** storage 読込・書込失敗を呼び出し元へ伝える最小原因コード。 */
 export type SettingsStoreErrorCause = 'storage-read-failed' | 'storage-write-failed';
 
+/** popup で利用者向けに出し分ける validation エラー種別。 */
+export type SettingsValidationErrorCause = 'primary-required' | 'duplicate-languages';
+
 /**
  * content 側が次の処理へ進める正規化済み設定。
  * `secondaryLang: null` は未選択を表し、実行時 fallback は content 側で解決する。
@@ -43,7 +46,7 @@ export type SettingsLoadResult =
 
 /**
  * 設定保存結果。
- * `ready` は正規化済み設定を保存済み、`incomplete` は primaryLang 未完了で保存拒否、
+ * `ready` は正規化済み設定を保存済み、`incomplete` は validation 未通過で保存拒否、
  * `error` は storage 書込失敗を表す。
  */
 export type SettingsSaveResult =
@@ -54,6 +57,7 @@ export type SettingsSaveResult =
   | {
       status: 'incomplete';
       settings: ExtensionSettings;
+      cause: SettingsValidationErrorCause;
     }
   | {
       status: 'error';
@@ -112,6 +116,29 @@ export function classifySettings(settings: ExtensionSettings): SettingsLoadResul
 }
 
 /**
+ * 保存要求値に対して、popup 向け validation エラー種別を判定する。
+ * 正規化後だけでは区別できない重複入力を、保存前に明示的に拒否するために使う。
+ *
+ * @param input popup などから渡される保存要求値。
+ * @returns validation エラー種別、または保存可能時の null。
+ */
+export function getSettingsValidationError(
+  input: Partial<StoredSettings> | null | undefined
+): SettingsValidationErrorCause | null {
+  const primaryLang = normalizePrimaryLang(input?.primaryLang);
+
+  if (primaryLang === null) {
+    return 'primary-required';
+  }
+
+  if (input?.secondaryLang === primaryLang) {
+    return 'duplicate-languages';
+  }
+
+  return null;
+}
+
+/**
  * storage から設定を読み、正規化と状態分類まで行う。
  * 読込失敗は例外として外へ投げず、error 結果に吸収して返す。
  *
@@ -132,23 +159,25 @@ export async function loadSettings(storageArea: StorageAreaLike = getChromeStora
 
 /**
  * 保存要求値を正規化してから storage へ保存する。
- * primaryLang が未完了の値は保存せず、書込失敗も例外ではなく結果値で返す。
+ * validation 未通過の値は保存せず、書込失敗も例外ではなく結果値で返す。
  *
  * @param input popup などから渡される保存要求値。
  * @param storageArea 書き込み先。省略時は chrome.storage.sync を使う。
- * @returns 保存成功時は ready、primaryLang 未完了時は incomplete、書込失敗時は error。
+ * @returns 保存成功時は ready、validation 未通過時は incomplete、書込失敗時は error。
  */
 export async function saveSettings(
   input: Partial<StoredSettings>,
   storageArea: StorageAreaLike = getChromeStorageSync()
 ): Promise<SettingsSaveResult> {
+  const validationError = getSettingsValidationError(input);
   const normalized = normalizeStoredSettings(input);
   const readySettings = toReadySettings(normalized);
 
-  if (!readySettings) {
+  if (validationError || !readySettings) {
     return {
       status: 'incomplete',
-      settings: normalized
+      settings: normalized,
+      cause: validationError ?? 'primary-required'
     };
   }
 
@@ -258,70 +287,13 @@ async function readStoredSettings(storageArea: StorageAreaLike): Promise<Partial
  * 完了は保存成功を意味し、失敗は storageSet の reject として呼び出し元へ返る。
  *
  * @param storageArea 書き込み先。chrome.storage.sync か test double を渡す。
- * @param settings 保存可能な状態まで正規化済みの設定。
+ * @param settings 保存する ready 設定。
+ * @returns storage への書き込み完了を待つ Promise。
  */
 async function writeStoredSettings(storageArea: StorageAreaLike, settings: ReadySettings): Promise<void> {
   await storageSet(storageArea, {
     [STORAGE_KEY_PRIMARY_LANG]: settings.primaryLang,
     [STORAGE_KEY_SECONDARY_LANG]: settings.secondaryLang
-  });
-}
-
-/**
- * callback 形式の storage.get を Promise 化する。
- * runtime.lastError と同期例外は throw ではなく reject にそろえて返す。
- *
- * @param storageArea 読み出し先。chrome.storage.sync か test double を渡す。
- * @param keys 読み出すキー。null の場合はすべてを対象にする。
- * @returns 取得できたキーと値の組。失敗時は Promise が reject される。
- */
-function storageGet(
-  storageArea: StorageAreaLike,
-  keys: string[] | Record<string, unknown> | null
-): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    try {
-      storageArea.get(keys, (items) => {
-        // runtime.lastError は callback 内で読まないと、その呼び出し結果に対応する失敗を拾えない。
-        const lastError = getChromeRuntime()?.lastError;
-        if (lastError) {
-          reject(lastError);
-          return;
-        }
-
-        resolve(items);
-      });
-    } catch (error) {
-      // storage 実装差や test double の同期例外も Promise reject にそろえて呼び出し側の分岐を単純化する。
-      reject(error);
-    }
-  });
-}
-
-/**
- * callback 形式の storage.set を Promise 化する。
- * runtime.lastError と同期例外は throw ではなく reject にそろえて返す。
- *
- * @param storageArea 書き込み先。chrome.storage.sync か test double を渡す。
- * @param items 保存するキーと値の組。
- */
-function storageSet(storageArea: StorageAreaLike, items: Record<string, unknown>): Promise<void> {
-  return new Promise((resolve, reject) => {
-    try {
-      storageArea.set(items, () => {
-        // runtime.lastError は callback 内で読まないと、その呼び出し結果に対応する失敗を拾えない。
-        const lastError = getChromeRuntime()?.lastError;
-        if (lastError) {
-          reject(lastError);
-          return;
-        }
-
-        resolve();
-      });
-    } catch (error) {
-      // storage 実装差や test double の同期例外も Promise reject にそろえて呼び出し側の分岐を単純化する。
-      reject(error);
-    }
   });
 }
 
@@ -340,7 +312,6 @@ type ChromeGlobalLike = {
 
 /**
  * 実行環境の globalThis から chrome 互換オブジェクトを安全に取り出す。
- * グローバル型が読めない tsconfig でも、この関数内の局所型に閉じ込めて扱う。
  *
  * @returns 利用可能な chrome 互換オブジェクト。存在しない環境では undefined。
  */
@@ -350,7 +321,6 @@ function getChromeGlobal(): ChromeGlobalLike | undefined {
 
 /**
  * 実行環境から runtime.lastError 参照用の runtime を安全に取得する。
- * chrome が無い環境では undefined を返し、呼び出し元が存在確認して使う前提とする。
  *
  * @returns runtime.lastError を参照できる runtime、または undefined。
  */
@@ -359,14 +329,71 @@ function getChromeRuntime(): ChromeRuntimeLike | undefined {
 }
 
 /**
+ * callback 形式の storage.get を Promise 化する。
+ * runtime.lastError と同期例外は throw ではなく reject にそろえて返す。
+ *
+ * @param storageArea 読み出し先。chrome.storage.sync か test double を渡す。
+ * @param keys 読み出すキー。null の場合はすべてを対象にする。
+ * @returns 取得できたキーと値の組。失敗時は Promise が reject される。
+ */
+function storageGet(
+  storageArea: StorageAreaLike,
+  keys: string[] | Record<string, unknown> | null
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    try {
+      storageArea.get(keys, (items) => {
+        const lastError = getChromeRuntime()?.lastError;
+
+        if (lastError) {
+          reject(lastError);
+          return;
+        }
+
+        resolve(items);
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+/**
+ * callback 形式の storage.set を Promise 化する。
+ * runtime.lastError と同期例外は throw ではなく reject にそろえて返す。
+ *
+ * @param storageArea 書き込み先。chrome.storage.sync か test double を渡す。
+ * @param items 保存するキーと値の組。
+ * @returns storage への書き込み完了を待つ Promise。
+ */
+function storageSet(storageArea: StorageAreaLike, items: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      storageArea.set(items, () => {
+        const lastError = getChromeRuntime()?.lastError;
+
+        if (lastError) {
+          reject(lastError);
+          return;
+        }
+
+        resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+/**
  * 既定で使う chrome.storage.sync を取得する。
- * test では注入引数で置き換える想定で、未対応環境では例外を投げる。
  *
  * @returns 利用可能な chrome.storage.sync 互換 API。
  * @throws chrome.storage.sync が存在しない環境で既定引数解決を行った場合。
  */
 function getChromeStorageSync(): StorageAreaLike {
   const storageArea = getChromeGlobal()?.storage?.sync;
+
   if (!storageArea) {
     throw new Error('chrome.storage.sync is not available');
   }
