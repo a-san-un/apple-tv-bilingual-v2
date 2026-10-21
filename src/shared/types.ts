@@ -1,5 +1,8 @@
 /**
+ * types.ts
+ *
  * module 境界で共有する最小共通型の置き場。
+ * Phase 3-A では runtime UI state と playback target snapshot の境界もここに含める。
  * Apple TV+ 固有の一時観測情報や debug 専用情報は持ち込まず、
  * 保存設定、runtime state、subtitle truth、session 状態の境界で使う型だけを定義する。
  */
@@ -35,7 +38,9 @@ export type ResolvedSubtitleTrack = {
   track: TextTrack;
 };
 
-/** `ResolvedSubtitleTrack` の別名。 */
+/**
+ * `ResolvedSubtitleTrack` を module 境界で短く参照するための別名。
+ */
 export type SubtitleTrack = ResolvedSubtitleTrack;
 
 /**
@@ -79,22 +84,10 @@ export type SubtitleHistorySnapshot = {
   future: SubtitleBlock[];
 };
 
-/** `SubtitleHistorySnapshot` の別名。 */
-export type SubtitleHistoryView = SubtitleHistorySnapshot;
-
 /**
- * playback-root が返す再生対象 snapshot。
- * content / session / panel / layout の境界で共有する。
+ * `SubtitleHistorySnapshot` を view 層で短く参照するための別名。
  */
-export type PlaybackTarget = {
-  playbackRoot: Element;
-  video: HTMLVideoElement;
-  panelMountTarget: Element;
-  layoutTarget: Element;
-};
-
-/** `PlaybackTarget` の別名。 */
-export type PlaybackTargetSnapshot = PlaybackTarget;
+export type SubtitleHistoryView = SubtitleHistorySnapshot;
 
 /**
  * runtime 上の UI 意思だけを表す state。
@@ -103,6 +96,49 @@ export type PlaybackTargetSnapshot = PlaybackTarget;
 export type ExtensionUiState = {
   extensionEnabled: boolean;
   panelOpen: boolean;
+};
+
+/**
+ * `ExtensionUiState` を module 内で短く参照するための別名。
+ */
+export type UiState = ExtensionUiState;
+
+/** UI state 更新の購読コールバック。 */
+export type UiStateListener = (state: ExtensionUiState) => void;
+
+/**
+ * playback-root が解決した再生対象。
+ * session が利用できる解決済み target だけを表す。
+ */
+export type PlaybackTarget = {
+  rootEl: HTMLElement;
+  videoEl: HTMLVideoElement;
+  panelMountEl: HTMLElement;
+  layoutTargetEl: HTMLElement;
+  snapshot: PlaybackTargetSnapshot;
+};
+
+/**
+ * playback target の比較用 snapshot。
+ * 解決済み target の DOM 参照比較だけに使う純粋 snapshot とする。
+ */
+export type PlaybackTargetSnapshot = {
+  rootEl: HTMLElement;
+  videoEl: HTMLVideoElement;
+  panelMountEl: HTMLElement;
+  layoutTargetEl: HTMLElement;
+};
+
+/**
+ * 2 つの playback target snapshot を比較した結果。
+ * session 再初期化の判断材料だけを返す。
+ */
+export type PlaybackTargetComparison = {
+  isSameTarget: boolean;
+  hasRootChanged: boolean;
+  hasVideoChanged: boolean;
+  hasPanelMountTargetChanged: boolean;
+  hasLayoutTargetChanged: boolean;
 };
 
 /**
@@ -170,11 +206,10 @@ export type PlaybackSessionState =
       reason: RestartReason | null;
     };
 
-/** `PlaybackSessionState` の別名。 */
+/**
+ * `PlaybackSessionState` を module 境界で短く参照するための別名。
+ */
 export type SessionState = PlaybackSessionState;
-
-/** UI state 更新の購読コールバック。 */
-export type UiStateListener = (state: ExtensionUiState) => void;
 
 /**
  * cleanup 1 件分の最小単位。
@@ -182,7 +217,9 @@ export type UiStateListener = (state: ExtensionUiState) => void;
  */
 export type DisposeFn = () => void;
 
-/** `dispose()` を公開する最小 contract。 */
+/**
+ * `dispose()` を公開する最小 contract。
+ */
 export type Disposable = {
   dispose: DisposeFn;
 };
@@ -195,5 +232,6 @@ export type UiStateStore = {
   getState(): ExtensionUiState;
   setExtensionEnabled(enabled: boolean): void;
   setPanelOpen(open: boolean): void;
-  subscribe(listener: UiStateListener): Disposable;
+  subscribe(listener: UiStateListener): DisposeFn;
 };
+
