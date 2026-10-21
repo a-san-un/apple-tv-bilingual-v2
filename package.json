@@ -10,7 +10,7 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck",
-    "lint": "eslint . --ext .ts",
+    "lint": "eslint .",
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
