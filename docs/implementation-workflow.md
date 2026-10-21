@@ -147,22 +147,35 @@ TypeScript に不慣れでも、各 module の役割、依存、session と clea
 
 ### JSDoc
 
-export する関数、型、クラスには JSDoc を付ける。
+関数には、export の有無、同期・非同期、function 宣言・arrow function の別にかかわらず、JSDoc を付ける。
+対象は、module 内部だけで使う関数、class の method、callback として渡す名前付き関数を含む。
+export する型とクラスにも JSDoc を付ける。内部の型は、意味が名前から自明でない場合に付ける。
 
-JSDoc は、呼び出し側が API を誤用しないための公開契約を短く示す。
-行コメントは実装上の「なぜ」を補い、JSDoc は API の役割・入力・出力・責務を説明する。
+JSDoc は、読み手が本体を読まずに呼び方と結果を理解するための契約を示す。
+行コメントは実装上の「なぜ」を補い、JSDoc は関数の役割・入力・出力・失敗条件を説明する。
 
-export 関数には、少なくとも何をするかを書く。
-次に当てはまる場合は、必要なタグを追加する。
+#### 関数の JSDoc に書くこと
 
-- 引数の意味、許容値、null / undefined の扱い、呼び出し側の前提が自明でない場合は、`@param` を書く
-- 戻り値の意味、所有権、後続の利用方法が自明でない場合は、`@returns` を書く
-- 要素未検出など、呼び出し側が扱うべき失敗条件で例外を投げる場合は、`@throws` または本文で失敗条件を書く
-- disposer、listener 解除関数、observer 停止関数など cleanup に関係する値を返す場合は、cleanup の owner と、呼び出し側が保持・実行する責務を書く
+- 本文: 何をする関数かを 1〜2 文で書く。呼び出される場面が限られるなら、その前提も書く
+- `@param`: すべての引数に書く。意味、許容値、`null` / `undefined` の扱い、呼び出し側の前提を含める
+- `@returns`: 戻り値がある関数には必ず書く。`Promise` を返す場合は、何が resolve されるかを書く
+- `@throws`: 例外を投げる場合に書く。`Promise` が reject される場合は、reject 条件を本文か `@returns` に書く
+- cleanup に関係する値を返す場合は、disposer や listener 解除関数を誰が保持し、誰が実行するかも書く
 
-単純な getter、名前と型だけで意味が明確な引数・戻り値、機械的な型 alias には、
-`@param` や `@returns` を無理に付けない。
-JSDoc を仕様書の転載にせず、module 境界で判断を必要とする情報を優先する。
+戻り値がない関数（`void` / `Promise<void>`）は、`@returns` を省略してよい。
+ただし `Promise<void>` は、完了や失敗が何を意味するかを本文に書く。
+
+#### 型を TypeScript に任せる部分
+
+型は TypeScript が持つので、`@param {string} name` のような型表記は書かない。
+`@param name 説明` の形にする。
+
+#### 書き過ぎを避けること
+
+引数名が型と同じ意味しか持たない場合も、`@param` は省略しない。
+その場合は、短くてよいので、用途か単位を書く。
+JSDoc に仕様書の文章を転載せず、実装を読めば分かることの言い換えを増やさない。
+module 境界で判断が要る情報（失敗の扱い、所有権、呼び出し順）を優先する。
 
 例:
 
@@ -171,7 +184,7 @@ JSDoc を仕様書の転載にせず、module 境界で判断を必要とする�
  * 複数の cleanup を 1 つの disposer に合成する。
  *
  * @param disposeFns 合成する cleanup。undefined は無視する。
- * @returns すべての cleanup を登録の逆順で 1 回だけ実行する disposer。
+ * @returns すべての cleanup を登録の逆順で 1 回だけ実行する disposer。
  */
 export function combineDisposers(
   ...disposeFns: Array<DisposeFn | undefined>
@@ -185,7 +198,7 @@ export function combineDisposers(
  * @param root 検索を開始する DOM 範囲。
  * @param selector 検索する CSS selector。
  * @returns 見つかった要素。
- * @throws {Error} selector に一致する要素がなく、後続処理を継続できない場合。
+ * @throws {Error} selector に一致する要素がなく、後続処理を継続できない場合。
  */
 export const requireElement = <T extends Element>(
   root: ParentNode,
@@ -193,8 +206,25 @@ export const requireElement = <T extends Element>(
 ): T => {
   // ...
 };
-```
 
+/**
+ * storage から指定キーの値を読み出す。
+ *
+ * runtime.lastError は callback 内で読まないと拾えないため、
+ * 失敗は例外ではなく Promise の reject にそろえる。
+ *
+ * @param storageArea 読み出し先。chrome.storage.sync か test double を渡す。
+ * @param keys 読み出すキー。null の場合はすべてを読み出す。
+ * @returns 保存済みの値。キーが無い場合は含まれない。
+ * @throws storage の同期例外と runtime.lastError は、Promise の reject として返る。
+ */
+function storageGet(
+  storageArea: StorageAreaLike,
+  keys: string[] | Record<string, unknown> | null,
+): Promise<Record<string, unknown>> {
+  // ...
+}
+```
 
 ### 行コメント
 
