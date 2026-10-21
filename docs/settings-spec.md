@@ -190,9 +190,12 @@ popup は `TextTrack.language`、ラベル揺れ、地域差分、代替候補�
 ### 6.4 候補一覧の配置責務
 
 候補一覧の定義元は popup 本体ではなく、設定 UI から参照できる共通モジュールに置く。
+初期実装では `src/settings/language-options.ts` を定義元とし、候補コード一覧の取得と候補コード判定を提供する。
+
+`src/settings/settings-store.ts` は候補一覧を所有せず、この共通モジュールを利用して保存値の validation と正規化を行う。
 
 ただし、そのモジュールは UI 候補一覧を提供する責務に留める。  
-Apple TV+ の生の track 情報や解決ロジックは持ち込まない。
+Apple TV+ の生の track 情報、track 解決ロジック、表示ラベル、secondary 専用の未選択 option は持ち込まない。
 
 ---
 

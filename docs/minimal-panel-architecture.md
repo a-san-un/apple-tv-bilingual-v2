@@ -197,6 +197,8 @@ src/
 │     └─ extension enabled / panel open を持つ small store
 │
 ├─ settings/
+│  ├─ language-options.ts
+│  │  └─ 対応言語 code の一覧と候補判定を提供する
 │  └─ settings-store.ts
 │     └─ `primaryLang` / `secondaryLang` の読込・保存を行う
 │
@@ -1155,24 +1157,24 @@ export type PlaybackSessionState = {
 - 二重 dispose 防止
 - 複数 module の `dispose()` を1つに合成する helper
 
-想定 API は次の程度に留める。
+公開 API は次の程度に留める。
 
 ```ts
-export type DisposeFn = () => void;
+export type DisposeEntry = Disposable | DisposeFn | null | undefined;
 
-export type Disposable = {
-  dispose(): void;
+export type DisposeBag = Disposable & {
+  add(entry: DisposeEntry): DisposeFn;
 };
 
-export function createDisposer(): {
-  add(dispose: DisposeFn): DisposeFn;
-  dispose(): void;
-};
+export const createDisposeBag = (): DisposeBag;
 
-export function combineDisposers(
-  ...disposeFns: Array<DisposeFn | undefined>
+export const composeDisposers = (
+  ...entries: DisposeEntry[]
 ): DisposeFn;
 ```
+
+`createDisposeBag()` は module 内で cleanup 対象を登録し、登録の逆順で一度だけ cleanup する。
+`composeDisposers()` は複数 module が返す cleanup を session lifecycle などの実行 owner が 1 つに合成するために使う。
 
 個別 module は、自分が登録した listener、timer、observer、binding、DOM を解放する `dispose()` を返す。  
 `session-lifecycle.ts` はそれらを合成して session の終了時に一度だけ呼ぶ。
