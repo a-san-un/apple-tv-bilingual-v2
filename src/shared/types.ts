@@ -158,7 +158,8 @@ export type PlayerLayoutState = {
  */
 export type RestartReason =
   | 'initial-start'
-  | 'playback-target-changed'
+  | 'spa-navigation'
+  | 'playback-target-appeared'
   | 'video-replaced'
   | 'settings-changed'
   | 'subtitle-track-changed'
@@ -189,8 +190,8 @@ export type PlaybackSessionState =
     }
   | {
       status: 'waiting';
-      target: PlaybackTarget;
-      waiting: WaitingState;
+      target: PlaybackTarget | null;
+      waiting: WaitingState | null;
       reason: RestartReason;
     }
   | {

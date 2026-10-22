@@ -434,3 +434,35 @@
 3. native subtitle menu を開き、閉じる直前と閉じた直後に `__atvbProbe.snapshot()` を実行して、menu root と select の存在を比較する。
 4. controls を表示・非表示にし、各状態で `__atvbProbe.snapshot()` を実行する。
 5. panel 実装後、候補 mount 位置ごとに fullscreen、viewport resize、controls visible 状態の z-index、pointer event、layout を確認する。
+
+
+## 2026-10-22: playback dialog の top layer と debug badge の可視性
+
+再生画面の `dialog.playback-view` は `HTMLDialogElement` として `open: true` で存在し、画面全体を覆う playback root として動作していた。
+
+`document.documentElement` 直下へ追加した `position: fixed` の debug badge は、`z-index: 2147483647` でも再生 dialog の前面には出ず、DevTools の `elementsFromPoint()` でも `dialog.playback-view` 配下の scrim / video container / content が先に返った。
+
+一方で同じ badge を `dialog.playback-view` 配下へ移すと即座に可視化できたため、再生画面向け UI は document 直下ではなく playback root 内へ mount する必要がある。
+
+構造イメージ:
+
+```text
+document
+└─ html
+   └─ body
+      └─ dialog.playback-view (top layer / playback root)
+         └─ div[data-testid="video-player"]
+            ├─ div[data-testid="video-container"]      # 動画と layout 基準
+            │  └─ video
+            ├─ div[data-testid="video-player-content"] # panel mount 候補
+            ├─ div[data-testid="video-player-scrim"]
+            └─ div[data-testid="video-player-controls-overlay"]
+
+// 見えなかった配置
+html
+└─ div[data-atv-bilingual-debug="session"]
+
+// 見える配置
+dialog.playback-view
+└─ div[data-atv-bilingual-debug="session"]
+```

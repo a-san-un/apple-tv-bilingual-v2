@@ -14,11 +14,11 @@ import {
 describe('playback-root', () => {
   it('builds a playback target snapshot', () => {
     document.body.innerHTML = `
-      <div data-testid="apple-tv-player">
-        <div class="web-player-video-view"></div>
-        <div class="web-chrome"></div>
+      <dialog class="playback-view">
+        <div data-testid="video-container"></div>
+        <div data-testid="video-player-content"></div>
         <video></video>
-      </div>
+      </dialog>
     `;
 
     const target = resolvePlaybackTarget(document);
@@ -40,11 +40,11 @@ describe('playback-root', () => {
 
   it('treats the same snapshot as the same target', () => {
     document.body.innerHTML = `
-      <div data-testid="apple-tv-player">
-        <div class="web-player-video-view"></div>
-        <div class="web-chrome"></div>
+      <dialog class="playback-view">
+        <div data-testid="video-container"></div>
+        <div data-testid="video-player-content"></div>
         <video></video>
-      </div>
+      </dialog>
     `;
 
     const target = resolvePlaybackTarget(document);
@@ -66,17 +66,17 @@ describe('playback-root', () => {
 
   it('detects video identity changes within the same root', () => {
     document.body.innerHTML = `
-      <div data-testid="apple-tv-player">
-        <div class="web-player-video-view"></div>
-        <div class="web-chrome"></div>
+      <dialog class="playback-view">
+        <div data-testid="video-container"></div>
+        <div data-testid="video-player-content"></div>
         <video id="first"></video>
-      </div>
+      </dialog>
     `;
 
     const first = resolvePlaybackTarget(document);
     expect(first).not.toBeNull();
 
-    const root = document.querySelector('[data-testid="apple-tv-player"]');
+    const root = document.querySelector('dialog.playback-view');
     const secondVideo = document.createElement('video');
     root?.querySelector('video')?.replaceWith(secondVideo);
 
@@ -95,22 +95,22 @@ describe('playback-root', () => {
 
   it('detects root, panel mount target, and layout target changes', () => {
     document.body.innerHTML = `
-      <div data-testid="apple-tv-player" id="root-a">
-        <div class="web-player-video-view" id="layout-a"></div>
-        <div class="web-chrome" id="panel-a"></div>
+      <dialog class="playback-view" id="root-a">
+        <div data-testid="video-container" id="layout-a"></div>
+        <div data-testid="video-player-content" id="panel-a"></div>
         <video></video>
-      </div>
+      </dialog>
     `;
 
     const first = resolvePlaybackTarget(document);
     expect(first).not.toBeNull();
 
     document.body.innerHTML = `
-      <div data-testid="apple-tv-player" id="root-b">
-        <div class="web-player-video-view" id="layout-b"></div>
-        <div class="web-chrome" id="panel-b"></div>
+      <dialog class="playback-view" id="root-b">
+        <div data-testid="video-container" id="layout-b"></div>
+        <div data-testid="video-player-content" id="panel-b"></div>
         <video></video>
-      </div>
+      </dialog>
     `;
 
     const second = resolvePlaybackTarget(document);
