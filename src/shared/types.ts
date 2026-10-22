@@ -215,6 +215,7 @@ export type SessionState = PlaybackSessionState;
 /**
  * cleanup 1 件分の最小単位。
  * listener / timer / observer / binding / DOM の解放を表す。
+ * 各 module は owner を持ったまま、この関数型だけを共有する。
  */
 export type DisposeFn = () => void;
 

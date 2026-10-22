@@ -3,6 +3,7 @@
  *
  * Apple TV+ 再生画面から playback target を解決する薄い module。
  * readiness 待機、retry、observer、session start / stop はここに持ち込まない。
+ * selector の優先順位と target 構築だけを担当する。
  */
 import type {
   PlaybackTarget,

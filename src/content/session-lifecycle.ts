@@ -22,6 +22,7 @@ const DEFAULT_READINESS_RETRY_DELAY_MS = 250;
 
 /**
  * lifecycle の状態変化を受け取る callback。
+ * content coordinator はこの通知だけを購読して session の外側へ状態を伝える。
  */
 export type SessionStateListener = (state: SessionState) => void;
 
@@ -38,6 +39,7 @@ export type SessionLifecycleController = {
 
 /**
  * lifecycle の外から差し替え可能にする依存群。
+ * test では clock / retry scheduler / document を差し替えて再試行を決定的に観測する。
  */
 export type SessionLifecycleOptions = {
   doc?: Document;
@@ -259,6 +261,7 @@ export const createSessionLifecycle = (
     startedAt: number,
   ): void => {
     const waitingBag = createDisposeBag();
+    // 旧 waiting にぶら下がる retry を先に止め、現在の target だけを監視対象に保つ。
     waitingBagHolder.replace(waitingBag);
 
     const waitingState: WaitingState = {
@@ -281,11 +284,13 @@ export const createSessionLifecycle = (
       }
 
       if (latestTarget.videoEl !== target.videoEl) {
+        // readiness 待機中に video identity が変わったら、旧 waiting を引き継がず session を張り直す。
         start(latestTarget, 'video-replaced');
         return;
       }
 
       if (isSubtitleReady(latestTarget)) {
+        // ready 到達後は waiting 専用 cleanup を即座に解放して running へ移る。
         waitingBagHolder.dispose();
         setState(createRunningState(latestTarget, reason));
         return;
@@ -311,6 +316,7 @@ export const createSessionLifecycle = (
       return;
     }
 
+    // start を呼び直すたびに旧 waiting retry をいったん捨て、二重監視を避ける。
     waitingBagHolder.dispose();
 
     if (!target) {
@@ -324,6 +330,7 @@ export const createSessionLifecycle = (
     }
 
     if (isSubtitleReady(target)) {
+      // 初回解決時点で ready なら waiting を経由せず、そのまま running に入る。
       setState(createRunningState(target, reason));
       return;
     }
@@ -349,6 +356,7 @@ export const createSessionLifecycle = (
     setState(createInactiveState('stopped', target));
   };
 
+  // lifecycle 全体の dispose 時に、waiting cleanup と listener 購読を最後にまとめて解放する。
   lifecycleBag.add(() => {
     waitingBagHolder.dispose();
     listeners.clear();
@@ -364,8 +372,17 @@ export const createSessionLifecycle = (
       return cloneState(state);
     },
 
+    /**
+     * playback target を受け取って session を開始または再開始する。
+     *
+     * @param target 開始対象の playback target。
+     * @param reason 開始理由。
+     */
     start,
 
+    /**
+     * 現在の session を停止する。
+     */
     stop,
 
     /**
@@ -387,7 +404,7 @@ export const createSessionLifecycle = (
      * session state 更新を購読する。
      *
      * @param listener state 更新ごとに呼ばれる callback。
-     * @returns 購読解除 disposer。
+     * @returns 購読解除 disposer。dispose 済みなら no-op を返す。
      */
     subscribe(listener: SessionStateListener): DisposeFn {
       if (disposed) {

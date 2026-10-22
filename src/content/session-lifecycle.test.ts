@@ -5,6 +5,18 @@ import { createSessionLifecycle } from './session-lifecycle';
 import { resolvePlaybackTarget } from './playback-root';
 import type { DisposeFn } from '../shared/types';
 
+/**
+ * session-lifecycle.test.ts
+ *
+ * readiness 待機、video 差し替え、stop / dispose の cleanup を確認する unit test。
+ * subtitle source や panel 描画の起動はここでは扱わない。
+ */
+/**
+ * retry 登録、手動発火、cleanup 回数の観測をまとめて扱う test double を作る。
+ * 実時間の `setTimeout` を使わず、waiting retry の張り替えだけを決定的に検証するために使う。
+ *
+ * @returns 登録済み retry の発火と disposer 観測を行う test helper 群。
+ */
 const createRetryScheduler = () => {
   const disposers: DisposeFn[] = [];
   const callbacks: Array<() => void> = [];
@@ -38,6 +50,11 @@ const createRetryScheduler = () => {
   };
 };
 
+/**
+ * playback root 解決に必要な最小 DOM を毎回作り直す。
+ *
+ * @param videoHtml 差し替えたい video 要素断片。省略時は単一 video を使う。
+ */
 const setPlaybackDom = (videoHtml = '<video></video>'): void => {
   document.body.innerHTML = `
     <dialog class="playback-view">
@@ -48,6 +65,12 @@ const setPlaybackDom = (videoHtml = '<video></video>'): void => {
   `;
 };
 
+/**
+ * jsdom 上の video へ最小の textTracks length を注入する。
+ *
+ * @param video length を差し込む対象の video。
+ * @param length readiness 判定で参照する track 数。
+ */
 const mockTextTrackLength = (video: HTMLVideoElement, length: number): void => {
   Object.defineProperty(video, 'textTracks', {
     configurable: true,
@@ -104,6 +127,7 @@ describe('session-lifecycle', () => {
 
     lifecycle.start(firstTarget, 'initial-start');
 
+    // waiting 中に video だけ差し替わると、旧 retry を破棄して新 target へ結び直す必要がある。
     const replacementVideo = document.createElement('video');
     replacementVideo.id = 'second';
     mockTextTrackLength(replacementVideo, 1);

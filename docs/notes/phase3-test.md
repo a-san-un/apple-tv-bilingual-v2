@@ -3,7 +3,7 @@
 実施日:2026-10-22
 実施者:yama
 対象ブランチ:main
-対象コミット:
+対象コミット:ae2626e
 対象作品:窓際のスパイ
 対象エピソード:シーズン6 エピソード1
 Apple TV+ URL:https://tv.apple.com/jp/show/%E7%AA%93%E9%9A%9B%E3%81%AE%E3%82%B9%E3%83%8F%E3%82%A4/umc.cmc.2szz3fdt71tl1ulnbp8utgq5o?ctx_agid=72d908d4

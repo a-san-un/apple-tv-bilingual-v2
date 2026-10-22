@@ -8,6 +8,8 @@ import {
 } from './playback-root';
 
 /**
+ * playback-root.test.ts
+ *
  * playback target snapshot の構築と比較だけを確認する unit test。
  * readiness 待機、observer、session restart はここでは扱わない。
  */
@@ -76,6 +78,7 @@ describe('playback-root', () => {
     const first = resolvePlaybackTarget(document);
     expect(first).not.toBeNull();
 
+    // 同じ root のまま video だけ差し替わったケースを模擬する。
     const root = document.querySelector('dialog.playback-view');
     const secondVideo = document.createElement('video');
     root?.querySelector('video')?.replaceWith(secondVideo);
@@ -105,6 +108,7 @@ describe('playback-root', () => {
     const first = resolvePlaybackTarget(document);
     expect(first).not.toBeNull();
 
+    // DOM 全体を差し替えて、session restart 判定に必要な 3 要素変化をまとめて確認する。
     document.body.innerHTML = `
       <dialog class="playback-view" id="root-b">
         <div data-testid="video-container" id="layout-b"></div>
