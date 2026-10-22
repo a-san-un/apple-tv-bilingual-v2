@@ -72,7 +72,9 @@
 - `src/panel/panel-host.ts` を panel host の生成・mount・unmount の唯一の owner とする
 - `src/panel/panel-renderer.ts` は Apple TV+ selector を直接持たない
 - panel host は playback session と同じ lifecycle で破棄する
-- host mount 位置は暫定であり、実機確認後に確定する
+- 再生中 UI は `document.body` や `document.documentElement` へ直接注入せず、再生中に前面レイヤーとなる `dialog.playback-view` 配下へ mount する
+- panel host の具体的な子要素は Phase 6 で確定する
+- 現時点では `[data-testid="video-player-content"]` を panel host 候補として扱う
 - host mount 候補の詳細は `docs/apple-tv-dom-observations.md` を参照する
 
 ### ON/OFF toggle

@@ -438,31 +438,57 @@
 
 ## 2026-10-22: playback dialog の top layer と debug badge の可視性
 
-再生画面の `dialog.playback-view` は `HTMLDialogElement` として `open: true` で存在し、画面全体を覆う playback root として動作していた。
+### 観測条件
 
-`document.documentElement` 直下へ追加した `position: fixed` の debug badge は、`z-index: 2147483647` でも再生 dialog の前面には出ず、DevTools の `elementsFromPoint()` でも `dialog.playback-view` 配下の scrim / video container / content が先に返った。
+- 作品: 窓際のスパイ、シーズン 6 エピソード 1
+- 設定: `primaryLang: en-GB`、`secondaryLang: ja`
+- 操作: 再生開始、作品切替、再生終了・戻る、再生再開、Apple TV+ native 字幕メニュー操作
 
-一方で同じ badge を `dialog.playback-view` 配下へ移すと即座に可視化できたため、再生画面向け UI は document 直下ではなく playback root 内へ mount する必要がある。
+### 観測結果
 
-構造イメージ:
+- 再生画面の `dialog.playback-view` は `HTMLDialogElement` として `open: true` で存在し、再生中は前面レイヤーとして振る舞った。
+- `document.body` または `document.documentElement` 側へ追加した `position: fixed` の debug badge は、`z-index: 2147483647` でも再生 dialog の前面には出ず、DevTools の `elementsFromPoint()` でも `dialog.playback-view` 配下の scrim / video container / content が先に返った。
+- 一方で同じ badge を `dialog.playback-view` 配下へ移すと即座に可視化できたため、再生画面向け UI は document 直下ではなく playback dialog 配下へ mount する必要がある。
+- 再生画面を閉じると badge は残らず、再生を再開すると再表示されて `running` になった。
+- 初回再生直後に waiting 状態を短時間許容する設計でも、この確認では体感上ほぼ即時に `running` へ遷移した。
+- Apple TV+ の native 字幕メニュー操作後も、badge は `running` を維持するか自然に復帰した。
+- Console に extension 起因の error は確認されなかった。
+
+### 再生画面のレイヤー構造
 
 ```text
 document
-└─ html
-   └─ body
-      └─ dialog.playback-view (top layer / playback root)
-         └─ div[data-testid="video-player"]
-            ├─ div[data-testid="video-container"]      # 動画と layout 基準
-            │  └─ video
-            ├─ div[data-testid="video-player-content"] # panel mount 候補
-            ├─ div[data-testid="video-player-scrim"]
-            └─ div[data-testid="video-player-controls-overlay"]
+└─ body
+   ├─ ... Apple TV+ の通常ページ DOM
+   └─ dialog.playback-view
+      ├─ video
+      ├─ [data-testid="video-player-content"]
+      │  ├─ 各種 overlay / 再生 UI
+      │  └─ panel host 候補
+      ├─ [data-testid="video-container"]
+      │  └─ layout 計算の基準候補
+      └─ debug badge
+```
 
-// 見えなかった配置
-html
-└─ div[data-atv-bilingual-debug="session"]
+### mount 位置の観測メモ
 
-// 見える配置
+- 見えなかった配置:
+
+```text
+document
+└─ html / body
+   └─ div[data-atv-bilingual-debug="session"]
+```
+
+- 見えた配置:
+
+```text
 dialog.playback-view
 └─ div[data-atv-bilingual-debug="session"]
 ```
+
+### 未確定事項
+
+- panel host は `dialog.playback-view` 配下に置く。
+- その具体的な子要素は Phase 6 の panel 実装時に再確認する。
+- `[data-testid="video-player-content"]` は panel host 候補、`[data-testid="video-container"]` は layout 計算の基準候補であり、この時点では最終決定ではない。

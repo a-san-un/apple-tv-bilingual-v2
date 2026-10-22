@@ -361,12 +361,19 @@ small integration test で確認する項目:
 - [ ] track が一部だけの途中状態でも、source、listener、panel host が重複しない。
 - [ ] ready 到達後に primary / secondary track を解決できる。
 - [ ] waiting 中に拡張を OFF にした場合、retry、timer、observer が停止する。
+- [ ] panel または debug UI が `dialog.playback-view` より前面に表示され、再生画面内で見える。
+- [ ] 作品切替または新しい video への切替後に、古い UI、listener、waiting 状態が残らない。
+- [ ] 再生終了または戻る操作後に、panel または debug UI が通常ページへ残らない。
+- [ ] Apple TV+ native 字幕メニュー操作の前後で session が停止状態に固定されず、必要に応じて waiting から自然に復帰できる。
+- [ ] Console に extension 起因の error が出ない。
 
 期待結果:
 - `textTracks.length === 0` は失敗ではなく waiting state として扱われる。
 - subtitle source の開始条件は `video.textTracks.length > 0` である。
 - readiness 待機中に session resource や extension DOM が重複しない。
 - OFF 後に waiting の再試行が継続しない。
+- 再生画面向け UI は playback dialog 配下で前面表示される。
+- 作品切替、再生終了、native 字幕メニュー操作の後も古い session 状態を引きずらない。
 
 実施タイミング:
 - `playback-root.ts` または `session-lifecycle.ts` の readiness 判定を実装・変更した時
