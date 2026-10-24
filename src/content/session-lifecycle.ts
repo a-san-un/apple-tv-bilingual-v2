@@ -6,7 +6,10 @@
  */
 import { createDisposeBag, type DisposeBag } from '../shared/dispose';
 import type { ReadySettings } from '../settings/settings-store';
-import { createSubtitleSession } from '../subtitles/subtitle-session';
+import {
+  createSubtitleSession,
+  type SubtitleSessionObservation,
+} from '../subtitles/subtitle-session';
 import {
   comparePlaybackTargetSnapshots,
   resolvePlaybackTarget,
@@ -55,6 +58,11 @@ export type SessionLifecycleOptions = {
   retryDelayMs?: number;
   scheduleRetry?: (callback: () => void, delayMs: number) => DisposeFn;
   subtitle?: SessionSubtitleInput;
+
+  /** 字幕観測情報。null は旧接続の情報をクリアする通知。 */
+  onSubtitleObservation?: (
+    observation: SubtitleSessionObservation | null,
+  ) => void;
 };
 
 /**
@@ -217,7 +225,26 @@ export const createSessionLifecycle = (
 
   let state: SessionState = createInactiveState('idle', null);
   let subtitleSession: Disposable | null = null;
+  let subtitleGeneration = 0;
   let disposed = false;
+
+  /**
+   * 字幕観測情報を渡し、観測先の例外を lifecycle へ伝播させない。
+   *
+   * @param observation 観測情報。null は表示情報のクリア。
+   */
+  const notifySubtitleObservation = (
+    observation: SubtitleSessionObservation | null,
+  ): void => {
+    try {
+      options.onSubtitleObservation?.(observation);
+    } catch (error) {
+      console.error(
+        '[atv-bilingual:debug] subtitle observation failed',
+        error,
+      );
+    }
+  };
 
   /** 登録済み listener へ、最新 state の写しを通知する。 */
   const notify = (): void => {
@@ -237,21 +264,24 @@ export const createSessionLifecycle = (
     notify();
   };
 
-  /** 字幕接続を切り離して dispose を試し、失敗後も後処理を継続する。 */
+  /** 旧通知を無効化し、字幕接続の破棄と観測情報のクリアを試す。 */
   const releaseSubtitleSession = (): void => {
     const session = subtitleSession;
+
     subtitleSession = null;
-    if (session === null) {
-      return;
-    }
+    subtitleGeneration += 1;
 
     try {
-      session.dispose();
+      if (session !== null) {
+        session.dispose();
+      }
     } catch (error) {
       console.error(
         '[atv-bilingual:cleanup] subtitle session cleanup failed',
         error,
       );
+    } finally {
+      notifySubtitleObservation(null);
     }
   };
 
@@ -297,20 +327,59 @@ export const createSessionLifecycle = (
     waitingBagHolder.dispose();
     releaseSubtitleSession();
 
+    const generation = subtitleGeneration;
+
+    /**
+     * 現在の接続からの観測情報だけを中継する。
+     *
+     * @param observation 字幕接続が作成した観測情報。
+     */
+    const observeSubtitle = (
+      observation: SubtitleSessionObservation,
+    ): void => {
+      if (
+        disposed ||
+        generation !== subtitleGeneration ||
+        observation.videoEl !== target.videoEl
+      ) {
+        return;
+      }
+
+      notifySubtitleObservation(observation);
+    };
+
     if (subtitleInput !== null) {
       try {
-        // source の生成・購読・bind は字幕接続 module に閉じ込める。
-        subtitleSession = createSubtitleSession({
+        const createdSession = createSubtitleSession({
           videoEl: target.videoEl,
           settings: subtitleInput.settings,
           fallbackSecondaryLang: subtitleInput.fallbackSecondaryLang,
+          ...(options.onSubtitleObservation === undefined
+            ? {}
+            : { onObservation: observeSubtitle }),
         });
+
+        // 初回通知中に停止・再開始された場合、古い接続を保持しない。
+        if (disposed || generation !== subtitleGeneration) {
+          createdSession.dispose();
+          return;
+        }
+
+        subtitleSession = createdSession;
       } catch (error) {
+        if (!disposed && generation === subtitleGeneration) {
+          notifySubtitleObservation(null);
+        }
+
         console.error(
           '[atv-bilingual:subtitle] subtitle session start failed',
           error,
         );
       }
+    }
+
+    if (disposed || generation !== subtitleGeneration) {
+      return;
     }
 
     setState({ status: 'running', target, waiting: null, reason });

@@ -1,9 +1,8 @@
 /**
  * readiness 通過後の video に対し、resolver と source を接続する。
- * source インスタンスとその購読を所有し、採用結果・cue 件数をログで観測する。
- * playback session 全体の開始停止は session-lifecycle.ts が担当し、
- * この module が返す dispose を保持・実行する。
- * readiness 待機、mode 変更、truth 構築、panel、native menu 同期は担当しない。
+ * source とその購読を所有し、採用結果・cue 件数をログと任意 callback へ通知する。
+ * playback session 全体の開始停止は session-lifecycle.ts が担当する。
+ * readiness 待機、mode 変更、truth 構築、DOM、native menu 同期は担当しない。
  */
 import type { ReadySettings } from '../settings/settings-store';
 import { createDisposeBag } from '../shared/dispose';
@@ -11,7 +10,10 @@ import { createSubtitleLogger, type Logger } from '../shared/log';
 import type {
     Disposable,
     LanguageCode,
+    ResolvedSubtitleTrack,
     SubtitleSourceChange,
+    SubtitleSourceSnapshot,
+    SubtitleTrackRole,
 } from '../shared/types';
 import {
     createSubtitleSource,
@@ -22,26 +24,46 @@ import {
     summarizeTrack,
 } from './text-track-resolver';
 
+/** 実 TextTrack を含まない、観測時点の採用 track 情報。 */
+export type SubtitleTrackObservation = {
+    language: string;
+    label: string;
+    mode: TextTrackMode | 'unknown';
+    cueCount: number;
+};
+
+/** 字幕接続が提供する観測情報。字幕本文や実 TextTrack は保持しない。 */
+export type SubtitleSessionObservation = {
+    videoEl: HTMLVideoElement;
+    event: SubtitleSourceChange['type'] | 'snapshot';
+    role: SubtitleTrackRole | null;
+    primary: SubtitleTrackObservation | null;
+    secondary: SubtitleTrackObservation | null;
+    primaryCueChanges: number;
+    secondaryCueChanges: number;
+};
+
 /**
  * 字幕接続の入力。
  * settings は settings store の ready 結果を渡す。
  * fallback は呼び出し側が取得し、利用しない場合は null を渡す。
+ * onObservation は観測用であり、その例外で字幕処理を停止しない。
  */
 export type SubtitleSessionOptions = {
     videoEl: HTMLVideoElement;
     settings: ReadySettings;
     fallbackSecondaryLang: LanguageCode | null;
     logger?: Logger;
+    onObservation?: (observation: SubtitleSessionObservation) => void;
 };
 
 /**
  * current video の track を解決し、source に接続する。
  * 候補なしや source 内で処理された bind 失敗はログで観測する。
- * それ以外の初期化例外は、作成済み資源の cleanup を試してから呼び出し元へ返す。
  *
- * @param options readiness 通過後の video、正規化済み設定、fallback と任意 logger。
+ * @param options video、設定、fallback と任意の logger・観測 callback。
  * @returns lifecycle が保持し、停止・再開始・破棄時に実行する Disposable。
- * @throws 初期化を継続できない場合、その例外。cleanup も失敗した場合は AggregateError。
+ * @throws 初期化を継続できない場合。その cleanup も失敗した場合は AggregateError。
  */
 export const createSubtitleSession = (
     options: SubtitleSessionOptions,
@@ -50,14 +72,86 @@ export const createSubtitleSession = (
     const settings = { ...options.settings };
     const fallbackSecondaryLang = options.fallbackSecondaryLang;
     const logger = options.logger ?? createSubtitleLogger();
+    const onObservation = options.onObservation;
     const bag = createDisposeBag();
 
     let source: SubtitleSource | null = null;
     let disposed = false;
+    let receivedSourceChange = false;
+    let primaryCueChanges = 0;
+    let secondaryCueChanges = 0;
 
     /**
-     * source の変化から、採用結果と cue 件数をログへ出す。
-     * snapshot と字幕本文は保持せず、停止後の通知は処理しない。
+     * snapshot の track を、実 TextTrack を含まない観測情報に変換する。
+     *
+     * @param track source が実際に保持する採用 track。null は未採用。
+     * @param cueCount snapshot から読み取れた cue 件数。
+     * @returns 言語・label・観測時点の mode・cue 件数。未採用なら null。
+     */
+    const observeTrack = (
+        track: ResolvedSubtitleTrack | null,
+        cueCount: number,
+    ): SubtitleTrackObservation | null => {
+        if (track === null) {
+            return null;
+        }
+
+        let mode: SubtitleTrackObservation['mode'] = 'unknown';
+        try {
+            // 正規化時の mode ではなく、通知時点の実 track の値を読む。
+            mode = track.track.mode;
+        } catch (error) {
+            logger.warn('subtitle observation failed to read mode', { error });
+        }
+
+        return {
+            language: track.language,
+            label: track.label,
+            mode,
+            cueCount,
+        };
+    };
+
+    /**
+     * snapshot の要約を観測先へ渡す。
+     * callback の例外は記録し、字幕接続へ伝播させない。
+     *
+     * @param snapshot source が返した現在の snapshot。
+     * @param event 観測契機。snapshot は source 通知がなかった初期状態の読取り。
+     * @param role cuechange の役割。それ以外は null。
+     */
+    const publishObservation = (
+        snapshot: SubtitleSourceSnapshot,
+        event: SubtitleSessionObservation['event'],
+        role: SubtitleTrackRole | null,
+    ): void => {
+        if (disposed || onObservation === undefined) {
+            return;
+        }
+
+        try {
+            onObservation({
+                videoEl,
+                event,
+                role,
+                primary: observeTrack(
+                    snapshot.pair.primary,
+                    snapshot.primaryCues.length,
+                ),
+                secondary: observeTrack(
+                    snapshot.pair.secondary,
+                    snapshot.secondaryCues.length,
+                ),
+                primaryCueChanges,
+                secondaryCueChanges,
+            });
+        } catch (error) {
+            logger.error('subtitle observation callback failed', { error });
+        }
+    };
+
+    /**
+     * source の変化を既存ログと観測 callback へ渡す。
      *
      * @param change source の bound / unbound / cuechange 通知。
      */
@@ -66,39 +160,52 @@ export const createSubtitleSession = (
             return;
         }
 
+        receivedSourceChange = true;
+
+        if (change.type === 'cuechange') {
+            if (change.role === 'primary') {
+                primaryCueChanges += 1;
+            } else {
+                secondaryCueChanges += 1;
+            }
+        } else {
+            primaryCueChanges = 0;
+            secondaryCueChanges = 0;
+        }
+
         const snapshot = source.getSnapshot();
+        const role = change.type === 'cuechange' ? change.role : null;
 
         logger.info('subtitle source snapshot', {
             event: change.type,
-            role: change.type === 'cuechange' ? change.role : null,
+            role,
             primary: summarizeTrack(snapshot.pair.primary),
             secondary: summarizeTrack(snapshot.pair.secondary),
             primaryCueCount: snapshot.primaryCues.length,
             secondaryCueCount: snapshot.secondaryCues.length,
             currentTime: videoEl.currentTime,
         });
+
+        publishObservation(snapshot, change.type, role);
     };
 
     /**
      * 通知を無効化し、購読解除と source の破棄を一度だけ試す。
-     * cleanup に失敗しても source の保持参照を破棄する。
      *
      * @throws bag の cleanup が失敗した場合は AggregateError。
-     *   source 内で記録された listener 解除失敗は、この例外に含まれないことがある。
+     *   source 内で記録された listener 解除失敗は含まれないことがある。
      */
     const dispose = (): void => {
         if (disposed) {
             return;
         }
 
-        // 実際の解除に失敗しても、停止済みの接続から観測処理を実行させない。
         disposed = true;
 
         try {
             bag.dispose();
         } finally {
             source = null;
-            // 全解除成功ではなく、cleanup を試行したことだけを記録する。
             logger.info('subtitle session cleanup attempted');
         }
     };
@@ -128,21 +235,24 @@ export const createSubtitleSession = (
             createdSource.dispose();
         });
 
-        // bind が送る初回 bound を取りこぼさないよう、先に購読する。
+        // 初回 bound の通知を受け取れるよう、bind より先に購読する。
         bag.add(createdSource.subscribe(observeSourceChange));
         createdSource.bind(pair);
 
         const snapshot = createdSource.getSnapshot();
 
+        // 未採用や bind 失敗で通知がなくても、未接続との違いを表示できるようにする。
+        if (!receivedSourceChange) {
+            publishObservation(snapshot, 'snapshot', null);
+        }
+
         if (
             snapshot.pair.primary === null &&
             snapshot.pair.secondary === null
         ) {
-            // 候補不足と bind 失敗は、採用結果と source のエラーログで区別する。
             logger.warn('subtitle source has no bound track');
         }
     } catch (error) {
-        // 初期化途中でも、登録済みの cleanup をすべて試してから失敗を返す。
         try {
             dispose();
         } catch (cleanupError) {

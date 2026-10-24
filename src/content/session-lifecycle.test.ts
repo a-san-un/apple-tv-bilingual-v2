@@ -454,3 +454,89 @@ describe('session-lifecycle の字幕接続の委譲', () => {
     }
   });
 });
+
+describe('session-lifecycle の字幕観測の寿命', () => {
+  const subtitleInput = {
+    settings: { primaryLang: 'en', secondaryLang: 'ja' },
+    fallbackSecondaryLang: null,
+  };
+
+  it('停止後は旧接続の観測通知を中継しない', () => {
+    const target = createTarget(1);
+    const observe = vi.fn();
+    const lifecycle = createSessionLifecycle({
+      doc: document,
+      subtitle: subtitleInput,
+      onSubtitleObservation: observe,
+    });
+
+    try {
+      lifecycle.start(target);
+
+      const callback =
+        createSubtitleSessionMock.mock.calls[0]?.[0].onObservation;
+      expect(callback).toBeTypeOf('function');
+
+      lifecycle.stop();
+      expect(observe).toHaveBeenLastCalledWith(null);
+      observe.mockClear();
+
+      callback?.({
+        videoEl: target.videoEl,
+        event: 'bound',
+        role: null,
+        primary: null,
+        secondary: null,
+        primaryCueChanges: 0,
+        secondaryCueChanges: 0,
+      });
+
+      expect(observe).not.toHaveBeenCalled();
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+
+  it('再開始後は新しい接続の観測通知だけを中継する', () => {
+    const target = createTarget(1);
+    const observe = vi.fn();
+    const lifecycle = createSessionLifecycle({
+      doc: document,
+      subtitle: subtitleInput,
+      onSubtitleObservation: observe,
+    });
+
+    try {
+      lifecycle.start(target);
+      const oldCallback =
+        createSubtitleSessionMock.mock.calls[0]?.[0].onObservation;
+
+      lifecycle.start(target, 'manual-restart');
+      const newCallback =
+        createSubtitleSessionMock.mock.calls[1]?.[0].onObservation;
+
+      expect(oldCallback).toBeTypeOf('function');
+      expect(newCallback).toBeTypeOf('function');
+      observe.mockClear();
+
+      const observation = {
+        videoEl: target.videoEl,
+        event: 'bound' as const,
+        role: null,
+        primary: null,
+        secondary: null,
+        primaryCueChanges: 0,
+        secondaryCueChanges: 0,
+      };
+
+      oldCallback?.(observation);
+      expect(observe).not.toHaveBeenCalled();
+
+      newCallback?.(observation);
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(observe).toHaveBeenCalledWith(observation);
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+});

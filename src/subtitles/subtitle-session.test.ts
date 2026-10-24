@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     createSubtitleSession,
+    type SubtitleSessionObservation,
     type SubtitleSessionOptions,
 } from './subtitle-session';
 import type { ReadySettings } from '../settings/settings-store';
@@ -347,5 +348,137 @@ describe('createSubtitleSession', () => {
         }
         expect(en.mode).toBe('hidden');
         expect(ja.mode).toBe('hidden');
+    });
+});
+
+describe('subtitle-session の観測通知', () => {
+    it('初回 bind の言語・mode・cue 件数と通知回数を渡す', () => {
+        const { options } = createFixture();
+        const observations: SubtitleSessionObservation[] = [];
+        const session = createSubtitleSession({
+            ...options,
+            onObservation: (observation) => {
+                observations.push(observation);
+            },
+        });
+
+        try {
+            expect(observations).toHaveLength(1);
+            expect(observations[0]).toMatchObject({
+                videoEl: options.videoEl,
+                event: 'bound',
+                role: null,
+                primary: {
+                    language: 'en',
+                    mode: 'hidden',
+                    cueCount: 1,
+                },
+                secondary: {
+                    language: 'ja',
+                    mode: 'hidden',
+                    cueCount: 1,
+                },
+                primaryCueChanges: 0,
+                secondaryCueChanges: 0,
+            });
+            expect(observations[0]?.primary).not.toHaveProperty('track');
+        } finally {
+            session.dispose();
+        }
+    });
+
+    it('各言語の cuechange を接続単位で数える', () => {
+        const { options, en, ja } = createFixture();
+        const observations: SubtitleSessionObservation[] = [];
+        const session = createSubtitleSession({
+            ...options,
+            onObservation: (observation) => {
+                observations.push(observation);
+            },
+        });
+
+        try {
+            en.fireCueChange();
+            en.fireCueChange();
+            ja.fireCueChange();
+
+            expect(observations[observations.length - 1]).toMatchObject({
+                event: 'cuechange',
+                role: 'secondary',
+                primaryCueChanges: 2,
+                secondaryCueChanges: 1,
+            });
+
+            // 過去に渡した観測情報の回数も、後から書き換えない。
+            expect(observations[0]?.primaryCueChanges).toBe(0);
+        } finally {
+            session.dispose();
+        }
+    });
+
+    it('候補なしでも未採用の初期状態を通知する', () => {
+        const { options } = createFixture({
+            primaryLang: 'fr',
+            secondaryLang: null,
+        });
+        const observe = vi.fn();
+        const session = createSubtitleSession({
+            ...options,
+            onObservation: observe,
+        });
+
+        try {
+            expect(observe).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    primary: null,
+                    secondary: null,
+                    primaryCueChanges: 0,
+                    secondaryCueChanges: 0,
+                }),
+            );
+        } finally {
+            session.dispose();
+        }
+    });
+
+    it('観測先が例外を投げても bind と cuechange 処理を続ける', () => {
+        const { options, en, ja, logger } = createFixture();
+        const observe = vi.fn(() => {
+            throw new Error('display failed');
+        });
+        const session = createSubtitleSession({
+            ...options,
+            onObservation: observe,
+        });
+
+        try {
+            expect(en.listenerCount()).toBe(1);
+            expect(ja.listenerCount()).toBe(1);
+            expect(() => en.fireCueChange()).not.toThrow();
+            expect(observe).toHaveBeenCalledTimes(2);
+            expect(logger.error).toHaveBeenCalledWith(
+                'subtitle observation callback failed',
+                { error: expect.any(Error) },
+            );
+        } finally {
+            session.dispose();
+        }
+    });
+
+    it('dispose 後は観測 callback を呼ばない', () => {
+        const { options, en, ja } = createFixture();
+        const observe = vi.fn();
+        const session = createSubtitleSession({
+            ...options,
+            onObservation: observe,
+        });
+
+        session.dispose();
+        observe.mockClear();
+
+        en.fireCueChange();
+        ja.fireCueChange();
+
+        expect(observe).not.toHaveBeenCalled();
     });
 });

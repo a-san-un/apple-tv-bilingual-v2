@@ -3,10 +3,12 @@
  *
  * 保存設定の読込、playback target の再評価、lifecycle への入力と開始停止を担当する。
  * ui-state の有効状態を読み、ready な設定と browser language fallback を渡す。
- * track 解決、source、readiness retry、truth、panel の処理は各 module に委譲する。
- * 既存の debug badge と target 発見用 observer を維持し、pagehide または起動失敗時に
+ * track 解決、source、readiness retry、truth、panel、debug badge の描画は
+ * 各 module に委譲する。
+ * target 発見用 observer を維持し、pagehide または起動失敗時に
  * top-level の購読・timer・observer・badge・lifecycle を一度だけ cleanup する。
  */
+import { createSessionDebugBadge } from './debug-badge';
 import {
   comparePlaybackTargetSnapshots,
   resolvePlaybackTarget,
@@ -14,11 +16,7 @@ import {
 import { createSessionLifecycle } from './session-lifecycle';
 import { loadSettings } from '../settings/settings-store';
 import { createDisposeBag } from '../shared/dispose';
-import type {
-  Disposable,
-  RestartReason,
-  SessionState,
-} from '../shared/types';
+import type { RestartReason } from '../shared/types';
 import { createUiStateStore } from '../ui/ui-state';
 
 /**
@@ -27,128 +25,11 @@ import { createUiStateStore } from '../ui/ui-state';
  */
 const DEBUG_PHASE4_SUBTITLES = true;
 
-/** session 状態だけを観測する既存の debug badge を表示する。 */
+/** session 状態を観測する debug badge を表示する。 */
 const DEBUG_SESSION_BADGE = true;
 
 /** DOM 変化による target 再評価をまとめる待機時間。ミリ秒単位。 */
 const SPA_OBSERVER_DEBOUNCE_MS = 120;
-
-/** session 状態の表示と、その DOM の破棄を提供する debug view。 */
-type SessionDebugBadge = Disposable & {
-  update(state: SessionState): void;
-};
-
-/**
- * playback dialog 配下へ配置する、最小の session 状態表示を作る。
- * subtitle の採用成功や cue 取得成功を表す UI ではない。
- *
- * @returns coordinator が更新し、top-level cleanup で破棄する debug view。
- */
-const createSessionDebugBadge = (): SessionDebugBadge => {
-  if (!DEBUG_SESSION_BADGE) {
-    return {
-      /**
-       * 表示無効時は状態を描画しない。
-       *
-       * @param state 受信した session 状態。
-       */
-      update(state): void {
-        void state;
-      },
-
-      /** 表示無効時は解放する DOM を持たない。 */
-      dispose(): void { },
-    };
-  }
-
-  const badge = document.createElement('div');
-  let mountedRoot: HTMLElement | null = null;
-  let disposed = false;
-
-  badge.setAttribute('data-atv-bilingual-debug', 'session');
-  Object.assign(badge.style, {
-    position: 'absolute',
-    top: '48px',
-    right: '16px',
-    zIndex: '2147483647',
-    padding: '6px 8px',
-    borderRadius: '6px',
-    fontSize: '12px',
-    lineHeight: '1.4',
-    fontFamily: 'monospace',
-    color: '#ffffff',
-    background: 'rgba(55, 65, 81, 0.88)',
-    pointerEvents: 'none',
-    whiteSpace: 'pre-wrap',
-  });
-
-  /**
-   * target の変更に合わせて badge の配置先を同期する。
-   *
-   * @param rootEl 現在の playback root。null は配置先なし。
-   */
-  const syncMountTarget = (rootEl: HTMLElement | null): void => {
-    if (mountedRoot === rootEl) {
-      return;
-    }
-
-    // 旧 dialog に拡張 DOM を残さないよう、配置先を変える前に取り外す。
-    badge.remove();
-    mountedRoot = rootEl;
-    mountedRoot?.appendChild(badge);
-  };
-
-  return {
-    /**
-     * session 状態を表示する。同じ文字列は再設定しない。
-     *
-     * @param state lifecycle が公開する session 状態。
-     */
-    update(state): void {
-      if (disposed) {
-        return;
-      }
-
-      // target を保持する stopped 状態でも、停止後の badge は残さない。
-      const rootEl =
-        state.status === 'waiting' || state.status === 'running'
-          ? state.target?.rootEl ?? null
-          : null;
-      syncMountTarget(rootEl);
-
-      const trackCount = state.target?.videoEl.textTracks.length ?? 0;
-      const text = [
-        `session: ${state.status}`,
-        `reason: ${state.reason ?? 'none'}`,
-        `tracks: ${trackCount}`,
-      ].join(' | ');
-
-      // badge 自身の childList 更新による、不要な observer 再評価を減らす。
-      if (badge.textContent !== text) {
-        badge.textContent = text;
-      }
-
-      const colors: Record<SessionState['status'], string> = {
-        idle: 'rgba(55, 65, 81, 0.88)',
-        waiting: 'rgba(180, 83, 9, 0.88)',
-        running: 'rgba(22, 101, 52, 0.88)',
-        stopped: 'rgba(55, 65, 81, 0.88)',
-      };
-      badge.style.background = colors[state.status];
-    },
-
-    /** badge を取り外し、保持参照を破棄する。2 回目以降は何もしない。 */
-    dispose(): void {
-      if (disposed) {
-        return;
-      }
-
-      disposed = true;
-      badge.remove();
-      mountedRoot = null;
-    },
-  };
-};
 
 /**
  * 設定と runtime state を lifecycle へ接続する。
@@ -159,8 +40,10 @@ const createSessionDebugBadge = (): SessionDebugBadge => {
 const bootContentScript = async (): Promise<void> => {
   const settingsResult = await loadSettings();
   const uiStateStore = createUiStateStore();
-  const sessionLifecycle = createSessionLifecycle(
-    settingsResult.status === 'ready'
+  const debugBadge = createSessionDebugBadge(DEBUG_SESSION_BADGE);
+  const sessionLifecycle = createSessionLifecycle({
+    onSubtitleObservation: debugBadge.updateSubtitle,
+    ...(settingsResult.status === 'ready'
       ? {
         subtitle: {
           settings: settingsResult.settings,
@@ -170,9 +53,8 @@ const bootContentScript = async (): Promise<void> => {
               : null,
         },
       }
-      : {},
-  );
-  const debugBadge = createSessionDebugBadge();
+      : {}),
+  });
   const bag = createDisposeBag();
 
   let observerTimerId: number | null = null;
@@ -181,7 +63,7 @@ const bootContentScript = async (): Promise<void> => {
 
   /**
    * target 再評価用の予約を解除する。
-   * timer は coordinator が 1 つだけ所有する。
+   * timer は coordinator が1つだけ所有する。
    */
   const clearObserverTimer = (): void => {
     if (observerTimerId === null) {
