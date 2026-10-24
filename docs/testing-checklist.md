@@ -198,11 +198,23 @@ npm run test
 - `src/subtitles/native-menu-sync.ts`
 
 自動テストで確認する項目:
-- `TextTrackList` から primary 候補を選べること。
-- `secondaryLang` 未選択時に fallback 候補を扱えること。
-- `language`、`label`、`kind` の差異を吸収して候補判定できること。
-- primary と secondary に同一 track を採用しないこと。
-- 候補なしケースを安全に扱えること。
+- TextTrackList 相当の ArrayLike と配列を候補一覧へ正規化できること。
+- language、label、kind、mode を使って候補判定し、language だけで採用しないこと。
+- metadata / chapters や forced label の候補を除外できること。
+- 表示中 track を mode === 'showing' で判定し、hidden track の active cue を誤採用しないこと。
+- 言語の一致度と候補の優先順位が期待どおりであること。
+- primary / secondary に別言語の track を解決でき、同じ TextTrack を両役割に採用しないこと。
+- secondaryLang 未選択時だけ fallback を利用し、primary と同じ基本言語の fallback を採用しないこと。
+- 候補なしの場合に null を返し、安全に扱えること。
+- current video に含まれない track を source が bind しないこと。
+- textTracks が 0 件でも source 自身は待機・retry・timer 登録をしないこと。
+- cuechange を role 付きで通知し、snapshot で両役割の cue を取得できること。
+- bind 入力や snapshot の管理情報を書き換えても、source 内部へ影響しないこと。
+- コピー後も実際の TextTrack 参照は維持され、通知と cleanup が機能すること。
+- 購読者の例外、listener 登録失敗、cue 読取失敗を安全に扱えること。
+
+設定としての同一言語の保存拒否と読込補正は「popup 設定の確認項目」、
+listener 解除失敗時の確認は「cleanup、二重 listener、二重描画、DOM 残留の確認項目」を参照する。
 
 手動スモークで確認する項目:
 1. primary / secondary に別言語を設定する。
@@ -474,7 +486,8 @@ small integration test で確認する項目:
 
 手動スモークで確認する項目:
 - [ ] 旧 video の disconnect または新 video への replacement を検出できる。
-- [ ] restart reason を記録し、少なくとも `video-disconnected` または `video-replaced` を確認できる。
+- [ ] video replacement による再初期化では、restart reason として `video-replaced` を確認できる。
+- [ ] 旧 video の disconnect は観測事実として記録し、再初期化理由コードとは区別する。理由コードは architecture の `RestartReason` に従う。
 - [ ] restart 前に旧 session の track binding が解除される。
 - [ ] restart 前に旧 session の cue listener が解除される。
 - [ ] restart 前に native menu binding が解除される。
@@ -538,10 +551,24 @@ small integration test で確認する項目:
 - `src/controls/on-off-toggle.ts`
 - `src/controls/panel-open-close-button.ts`
 
-自動テストで確認したい項目:
-- disposer 登録順に依存しない安全な cleanup ができること。
-- cleanup を複数回呼んでも致命的に壊れないこと。
+自動テストで確認する項目:
+- bag が登録の逆順で cleanup を実行すること。
+- bag と個別 disposer の両方から呼んでも、同じ登録の cleanup を二重実行しないこと。
+- dispose 済み bag への追加は、その場で cleanup すること。
+- cleanup が途中で失敗しても残りを試し、全件の試行後に AggregateError で失敗を報告すること。
+- 失敗後に bag.dispose を再度呼んでも、同じ cleanup を再実行しないこと。
+- 個別 disposer の直接実行で失敗した場合も、bag 側では二重実行せず残りを処理すること。
+- composeDisposers も逆順実行・一度化・失敗報告の契約を満たすこと。
+- source が同じ pair に二重 bind せず、再 bind 時に旧 listener の解除を先に試すこと。
+- source の一方の listener 解除が失敗しても、他方の解除を試し、失敗をログに残すこと。
+- listener 登録失敗後の cleanup も失敗した場合、source の bind から例外を漏らさないこと。
+- source の dispose 後は購読者へ通知しないこと。
+- 待機 retry の解除が失敗しても、lifecycle の停止・再開始・直接 dispose の後処理が進むこと。
 - unbind / unmount / unsubscribe が二重呼び出しに耐えること。
+
+失敗ケースの test double では、「すべての解除を試したこと」と
+「すべての解除に成功したこと」を区別する。
+解除関数自体が失敗した resource が、実際に消えたとは判定しない。
 
 手動スモークで確認する項目:
 1. ON → OFF → ON を複数回繰り返す。
@@ -745,11 +772,29 @@ small integration test で確認する項目:
 対象:
 - `src/subtitles/text-track-resolver.ts`
 - `src/subtitles/subtitle-source.ts`
+- `src/shared/dispose.ts`
+- `src/content/session-lifecycle.ts`
+- 設定境界の回帰確認として `src/settings/settings-store.ts`
 
-追加するテスト:
-- resolver の unit test
-- settings と resolver の small integration test
-- 再生、一時停止、字幕切替の手動スモーク
+追加・更新するテスト:
+- resolver の正規化・候補選定・表示中判定・fallback の unit test
+- resolver の採用結果を source へ渡す small integration test
+- source の listener 所有・通知・コピー保護・エラー境界の test
+- dispose helper と source / lifecycle の cleanup 失敗時の test
+- 同一言語の保存拒否・書込防止・読込補正の settings test
+- settings と resolver を接続した時点で、その受け渡しの small integration test
+
+手動確認:
+- 最小接続後、readiness 通過後の current video から track を取得・採用できることを確認する。
+- source の bind、cue 取得、停止時の解除をログ等で確認する。
+- panel 未実装の段階では、panel の表示結果を合否条件にしない。
+- native menu 同期や history / renderer の確認は、それぞれの接続後に行う。
+
+module の自動テスト成功と、Apple TV+ 実画面での確認を区別して記録する。
+source / resolver が再生経路へ未接続の場合、実機確認済みとは扱わない。
+
+詳細な確認項目は「primary / secondary 字幕の確認項目」と
+「cleanup、二重 listener、二重描画、DOM 残留の確認項目」を参照する。
 
 ### Phase 5: SubtitleBlock[] と history
 

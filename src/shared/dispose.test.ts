@@ -1,6 +1,7 @@
 /**
  * `src/shared/dispose.ts` の unit test。
- * reverse-order cleanup、二重 dispose 防止、dispose 済み bag への追加時の即時 cleanup を確認する。
+ * reverse-order cleanup、二重 dispose 防止、dispose 済み bag への追加時の即時 cleanup、
+ * cleanup 失敗時の継続実行と AggregateError による失敗報告を確認する。
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -73,6 +74,74 @@ describe('createDisposeBag', () => {
 
     expect(dispose).toHaveBeenCalledTimes(1);
   });
+
+  it('cleanup が失敗しても残りを逆順で試し、失敗をまとめて報告する', () => {
+    const bag = createDisposeBag();
+    const calls: string[] = [];
+    const secondError = new Error('second failed');
+    const thirdError = new Error('third failed');
+
+    bag.add(() => {
+      calls.push('first');
+    });
+    bag.add(() => {
+      calls.push('second');
+      throw secondError;
+    });
+    bag.add(() => {
+      calls.push('third');
+      throw thirdError;
+    });
+
+    let caught: unknown;
+
+    try {
+      bag.dispose();
+    } catch (error) {
+      caught = error;
+    }
+
+    // 途中の失敗で止まらず、登録の逆順ですべて試す。
+    expect(calls).toEqual(['third', 'second', 'first']);
+    expect(caught).toBeInstanceOf(AggregateError);
+
+    if (!(caught instanceof AggregateError)) {
+      throw new Error('cleanup failures must be reported as AggregateError');
+    }
+
+    // 失敗は、実際に cleanup を試した順序で報告する。
+    expect(caught.errors).toEqual([thirdError, secondError]);
+
+    // 失敗したものも含め、同じ cleanup を自動で再実行しない。
+    expect(() => bag.dispose()).not.toThrow();
+    expect(calls).toEqual(['third', 'second', 'first']);
+  });
+
+  it('個別 disposer が失敗しても bag から二重実行せず、残りを解除する', () => {
+    const bag = createDisposeBag();
+    const failure = new Error('individual cleanup failed');
+    const healthy = vi.fn();
+    const failing = vi.fn(() => {
+      throw failure;
+    });
+
+    bag.add(healthy);
+    const registered = bag.add(failing);
+
+    expect(registered).toThrow(failure);
+
+    // 個別実行で失敗した cleanup は試行済みなので、bag では残りだけを実行する。
+    expect(() => bag.dispose()).not.toThrow();
+
+    expect(failing).toHaveBeenCalledTimes(1);
+    expect(healthy).toHaveBeenCalledTimes(1);
+
+    expect(() => registered()).not.toThrow();
+    expect(() => bag.dispose()).not.toThrow();
+
+    expect(failing).toHaveBeenCalledTimes(1);
+    expect(healthy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('composeDisposers', () => {
@@ -97,6 +166,31 @@ describe('composeDisposers', () => {
     dispose();
     dispose();
 
+    expect(calls).toEqual(['third', 'second', 'first']);
+  });
+
+  it('cleanup が失敗しても残りを試し、二度目は実行しない', () => {
+    const calls: string[] = [];
+    const failure = new Error('second failed');
+
+    const dispose = composeDisposers(
+      () => {
+        calls.push('first');
+      },
+      () => {
+        calls.push('second');
+        throw failure;
+      },
+      () => {
+        calls.push('third');
+      },
+    );
+
+    expect(dispose).toThrow(AggregateError);
+    expect(calls).toEqual(['third', 'second', 'first']);
+
+    // 合成した disposer も、失敗後に同じ cleanup を再実行しない。
+    expect(() => dispose()).not.toThrow();
     expect(calls).toEqual(['third', 'second', 'first']);
   });
 });

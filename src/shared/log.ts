@@ -4,7 +4,7 @@
  */
 
 /** ログのまとまりを識別する最小 category。 */
-export type LogCategory = 'readiness' | 'restart' | 'cleanup' | 'general';
+export type LogCategory = 'readiness' | 'restart' | 'cleanup' | 'subtitle' | 'general';
 
 /** ログ出力時に付与する任意の補助情報。 */
 export type LogMeta = Record<string, unknown>;
@@ -86,3 +86,12 @@ export const createRestartLogger = (prefix?: string): Logger =>
  */
 export const createCleanupLogger = (prefix?: string): Logger =>
   createLogger('cleanup', prefix);
+
+/**
+ * 採用 track、bind / unbind、source 内エラーの追跡用 logger を作る。
+ *
+ * @param prefix ログ先頭に付ける識別子。省略時は `atv-bilingual` を使う。
+ * @returns subtitle category に固定された logger。
+ */
+export const createSubtitleLogger = (prefix?: string): Logger =>
+  createLogger('subtitle', prefix);

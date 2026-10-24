@@ -344,10 +344,15 @@ popup の初期表示として、候補一覧の先頭を自動保存済み値�
 
 ### 9.3 `secondaryLang` の fallback
 
-`secondaryLang` が `null` の場合、content 側は実行時にブラウザ言語を fallback 値として扱う。
+`secondaryLang` が `null` の場合、content 側は実行時にブラウザ言語を fallback 候補として扱う。
 
-ここで使うブラウザ言語は、UI 設定の保存値ではなく runtime 解決結果である。  
-そのため `chrome.storage.sync` の `secondaryLang` を fallback 値で上書き保存してはならない。
+- `settings-store.ts` は保存設定を正規化し、未選択の `secondaryLang` は null のまま返す。
+- content 側の接続処理がブラウザ言語を取得し、resolver へ fallback 候補として渡す。
+- resolver は渡された値から secondary track の採用可否を判断する。ブラウザ言語そのものは取得しない。
+- `secondaryLang` が明示設定されている場合、ブラウザ言語 fallback で置き換えない。
+- fallback による同一言語の二重採用は行わない。具体的な採用条件と API は architecture を参照する。
+
+fallback は runtime の解決にだけ使い、`chrome.storage.sync` の `secondaryLang` を上書きしない。
 
 ### 9.4 browser language fallback が候補外の場合
 
@@ -399,39 +404,22 @@ popup 側のバリデーションは UX のための前段チェックであり�
 
 ### 10.4 content 側へ渡す正規化済み設定値
 
-`settings-store.ts` から popup と content へ返す設定値は、常に validation と normalization を通過した shape でなければならない。
+`settings-store.ts` は保存設定を validation / normalization し、設定状態とともに popup / content へ返す。
 
-content 側へ渡す設定取得結果は、少なくとも次の状態を区別できる必要がある。
+設定取得結果では、次の状態を区別する。
 
-- `ready`: 正規化済み設定があり、content 側が track 解決へ進んでよい
-- `incomplete`: `primaryLang` 未設定または不正であり、設定完了待ちにする
-- `error`: storage 読込などが失敗しており、安全側に停止する
+- `ready`: 有効な primaryLang があり、track 解決へ進んでよい
+- `incomplete`: primaryLang が未設定または不正であり、設定完了待ちにする
+- `error`: storage 読込が失敗しており、安全側に停止する
 
-例:
+`ready` の設定は `primaryLang` と `secondaryLang` を持つ。
+`secondaryLang: null` は正常な未選択状態であり、content 側の runtime fallback で扱う。
 
-```ts
-export type ResolvedLanguageSettings = {
-  primaryLang: string;
-  secondaryLang: string | null;
-  effectiveSecondaryLang: string | null;
-};
+`ready` は、字幕 track が見つかったこと、二言語の取得が完了したこと、
+または拡張を ON にすることを意味しない。
 
-export type SettingsLoadResult =
-  | {
-      status: "ready";
-      settings: ResolvedLanguageSettings;
-    }
-  | {
-      status: "incomplete";
-    }
-  | {
-      status: "error";
-      cause: "storage-read-failed";
-    };
-```
-
-型名やエラー表現は実装で変更してよい。  
-ただし `ready`、`incomplete`、`error` を区別できることは本仕様の要件とする。
+settings store はブラウザ言語を取得せず、fallback 適用後の値を戻り値へ必須項目として含めない。
+fallback の受け渡しは §9.3、設定取得結果の型は §14 を参照する。
 
 ---
 
@@ -626,45 +614,62 @@ export type StoredSettings = {
 
 これは storage に保存される正本形式である。
 
-### 14.2 実行時利用モデル
+### 14.2 正規化済み設定と runtime fallback
+
+settings store が ready として返す設定は、次の形とする。
 
 ```ts
-export type ResolvedLanguageSettings = {
+export type ReadySettings = {
   primaryLang: string;
   secondaryLang: string | null;
-  effectiveSecondaryLang: string | null;
 };
 ```
 
-`effectiveSecondaryLang` は runtime でのみ使う派生値であり、保存設定そのものではない。  
-この派生値を storage に書き戻してはならない。
+- primaryLang は有効な設定言語とする。
+- secondaryLang は有効な設定言語、または未選択を表す null とする。
+- ブラウザ言語 fallback は、この設定を書き換えずに content 側で別途渡す。
+- effective secondary language は runtime の概念として扱い、
+  `effectiveSecondaryLang` という property を settings store の戻り値に必須としない。
+- fallback の具体的な引数・採用判定は architecture の resolver API を参照する。
+- fallback 候補も採用結果も storage へ書き戻さない。
 
 ### 14.3 設定取得結果モデル
 
 ```ts
 export type SettingsLoadResult =
   | {
-      status: "ready";
-      settings: ResolvedLanguageSettings;
+      status: 'ready';
+      settings: ReadySettings;
     }
   | {
-      status: "incomplete";
+      status: 'incomplete';
+      settings: ExtensionSettings;
     }
   | {
-      status: "error";
-      cause: "storage-read-failed";
+      status: 'error';
+      cause: 'storage-read-failed';
     };
 ```
 
-`settings-store.ts` は、content 側が未設定と読込失敗を区別できる結果を返す。
+`ExtensionSettings` は未完了状態を含む正規化済み設定の共通型であり、
+`primaryLang: null` を許容する。定義元は `src/shared/types.ts` とする。
+
+§14.1 は保存成功時のデータ形式を示す。
+未完了を表現できる内部共通型と、保存可能な ready 設定の条件を混同しない。
+
+`settings-store.ts` は、content 側が設定未完了と読込失敗を区別できる結果を返す。
+`incomplete` の settings は入力状態の表示などに利用できるが、字幕処理の開始には使わない。
 
 ### 14.4 状態の分離
 
-型レベルでも次の分離を崩さない。
+型と受け渡しの両方で、次の分離を崩さない。
 
-- 保存設定: `StoredSettings`
-- 実行時解決後の設定: `ResolvedLanguageSettings`
+- 保存成功時のデータ形式: §14.1 の保存設定モデル
+- 未完了を含む内部共通型: `ExtensionSettings`
+- track 解決へ進める正規化済み設定: `ReadySettings`
 - 設定取得状態: `SettingsLoadResult`
+- ブラウザ言語 fallback: content 側で取得して resolver へ渡す runtime の入力
+- 採用済み primary / secondary track: resolver の runtime 採用結果
 - UI の一時状態: popup ローカル state または `ui-state.ts`
 
 ---

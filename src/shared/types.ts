@@ -53,6 +53,21 @@ export type ResolvedTrackPair = {
 };
 
 /**
+ * primary / secondary のどちら側かを表す役割名。
+ * resolver の採用結果と source の通知で同じ語を使う。
+ */
+export type SubtitleTrackRole = 'primary' | 'secondary';
+
+/**
+ * resolver が `TextTrackList` から正規化した track 候補。
+ * `index` は取得時点の `textTracks` 内の位置であり、永続識別子には使わない。
+ * `mode` も取得時点の値なので、表示中判定が必要なときは再正規化する。
+ */
+export type SubtitleTrackCandidate = ResolvedSubtitleTrack & {
+  index: number;
+};
+
+/**
  * 生 cue から切り出した最小 snapshot。
  * block 構築前の一時表現であり、保存対象ではない。
  */
@@ -62,6 +77,29 @@ export type SubtitleCueSnapshot = {
   text: string;
   track: ResolvedSubtitleTrack | null;
 };
+
+/**
+ * `subtitle-source.ts` が返す source 全体の snapshot。
+ * bind 中の track pair と、その track から読んだ cue 一覧だけを持つ。
+ * 未 bind または読取失敗時は cue 配列を空にする。
+ */
+export type SubtitleSourceSnapshot = {
+  pair: ResolvedTrackPair;
+  primaryCues: SubtitleCueSnapshot[];
+  secondaryCues: SubtitleCueSnapshot[];
+};
+
+/**
+ * `subtitle-source.ts` が購読者へ送る変化通知。
+ * 中身は持たせず、受け手は必要なときに `getSnapshot()` を読む。
+ */
+export type SubtitleSourceChange =
+  | { type: 'bound' }
+  | { type: 'unbound' }
+  | { type: 'cuechange'; role: SubtitleTrackRole };
+
+/** `subtitle-source.ts` の変化通知を受け取る callback。 */
+export type SubtitleSourceListener = (change: SubtitleSourceChange) => void;
 
 /**
  * panel 表示の truth になる字幕表示単位。
@@ -183,29 +221,29 @@ export type WaitingState = {
  */
 export type PlaybackSessionState =
   | {
-      status: 'idle';
-      target: null;
-      waiting: null;
-      reason: RestartReason | null;
-    }
+    status: 'idle';
+    target: null;
+    waiting: null;
+    reason: RestartReason | null;
+  }
   | {
-      status: 'waiting';
-      target: PlaybackTarget | null;
-      waiting: WaitingState | null;
-      reason: RestartReason;
-    }
+    status: 'waiting';
+    target: PlaybackTarget | null;
+    waiting: WaitingState | null;
+    reason: RestartReason;
+  }
   | {
-      status: 'running';
-      target: PlaybackTarget;
-      waiting: null;
-      reason: RestartReason;
-    }
+    status: 'running';
+    target: PlaybackTarget;
+    waiting: null;
+    reason: RestartReason;
+  }
   | {
-      status: 'stopped';
-      target: PlaybackTarget | null;
-      waiting: null;
-      reason: RestartReason | null;
-    };
+    status: 'stopped';
+    target: PlaybackTarget | null;
+    waiting: null;
+    reason: RestartReason | null;
+  };
 
 /**
  * `PlaybackSessionState` を module 境界で短く参照するための別名。

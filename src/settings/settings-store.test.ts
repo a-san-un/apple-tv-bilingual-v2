@@ -147,6 +147,26 @@ async function testLoadsReadySettingsFromStorage(): Promise<void> {
 }
 
 /**
+ * 保存済みの学習言語と母国語が同一でも、読込時に secondary を null に補正することを確認する。
+ *
+ * @returns `loadSettings()` の結果を検証する Promise。
+ */
+async function testLoadsDuplicatedSecondaryAsNull(): Promise<void> {
+  const storage = createStorageArea({
+    primaryLang: 'en',
+    secondaryLang: 'en'
+  });
+
+  await expect(loadSettings(storage)).resolves.toEqual({
+    status: 'ready',
+    settings: {
+      primaryLang: 'en',
+      secondaryLang: null
+    }
+  });
+}
+
+/**
  * primaryLang が欠落している保存値は、secondary が残っていても incomplete で止まることを確認する。
  *
  * @returns `loadSettings()` の結果を検証する Promise。
@@ -308,6 +328,7 @@ describe('settings-store', () => {
 
   // storage 読込時の ready / incomplete / error の分岐を固定する。
   it('loads ready settings from storage', testLoadsReadySettingsFromStorage);
+  it('loads duplicated secondary as null', testLoadsDuplicatedSecondaryAsNull);
   it('loads incomplete settings when primaryLang is missing', testLoadsIncompleteSettingsWhenPrimaryLangIsMissing);
   it('returns storage-read-failed when get throws', testReturnsStorageReadFailedWhenGetThrows);
 

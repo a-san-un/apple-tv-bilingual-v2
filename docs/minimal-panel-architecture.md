@@ -290,7 +290,10 @@ subtitle binding を所有するが、panel DOM は触らない。
 - `primaryLang` / `secondaryLang` に基づく候補選定
 - primary / secondary の採用判定
 - fallback 判定
-- 同一言語禁止の吸収
+- 同じ TextTrack の二重採用防止
+- primary と同じ基本言語の fallback の採用防止
+
+設定値としての学習言語・母国語の同一値禁止は `docs/settings-spec.md` に従う。
 
 readiness 待機や retry は持たない。  
 DOM や panel も触らず、ロジック境界に留める。
@@ -426,19 +429,25 @@ module 境界で共有する型を定義する。
 
 この文書で最低限固定する型は次の通りとする。
 
-- `StoredSettings`
-- `ResolvedSubtitleTrack`
+- `LanguageCode`
+- `StoredSettings` / `ExtensionSettings`
+- `ResolvedSubtitleTrack` / `SubtitleTrack`
 - `ResolvedTrackPair`
+- `SubtitleTrackRole`
+- `SubtitleTrackCandidate`
 - `SubtitleCueSnapshot`
+- `SubtitleSourceSnapshot`
+- `SubtitleSourceChange` / `SubtitleSourceListener`
 - `SubtitleBlock`
-- `SubtitleHistorySnapshot`
-- `PlaybackTarget`
-- `PlaybackSessionState`
-- `ExtensionUiState`
+- `SubtitleHistorySnapshot` / `SubtitleHistoryView`
+- `PlaybackTarget` / `PlaybackTargetSnapshot` / `PlaybackTargetComparison`
+- `PlaybackSessionState` / `SessionState`
+- `WaitingState` / `RestartReason`
+- `ExtensionUiState` / `UiState` / `UiStateListener` / `UiStateStore`
 - `PlayerLayoutState`
-- `RestartReason`
-- `DisposeFn`
-- `Disposable`
+- `DisposeFn` / `Disposable`
+
+共通型の定義は §18 に置き、API の説明箇所では再定義せず参照する。
 
 ### `src/shared/dispose.ts`
 
@@ -585,17 +594,11 @@ readiness 待機中に video identity が変わった場合は、古い待機を
 - panel 表示に必要な最小情報だけを持つ
 - source 側の揺れを UI に直接漏らさない
 
-型の方向性は次のようにする。
+共通型の定義は §18 の `SubtitleBlock` を参照する。
 
-```ts
-type SubtitleBlock = {
-  id: string;
-  startTime: number;
-  endTime: number;
-  primaryText: string;
-  secondaryText: string | null;
-};
-```
+現行の共通型は、時刻範囲と primary / secondary の表示文字列を持つ。
+id は現行型に含めない。Phase 5 で識別子が必要になった場合は、
+用途と必要性を確認してから共通型と本節を同時に更新する。
 
 補足ルール:
 
@@ -678,15 +681,13 @@ panel-renderer.ts を初回描画
 
 ## 13. session restart と cleanup
 
-session 再初期化の理由は、少なくとも次を型として固定する。
+開始・再初期化理由は §18 の `RestartReason` で共有する。
 
-```ts
-export type RestartReason =
-  | 'video-disconnected'
-  | 'video-replaced'
-  | 'playback-root-disconnected'
-  | 'spa-target-changed';
-```
+DOM 上の再初期化契機と、実装済みの理由コードは区別する。
+この節の restart 手順は設計方針であり、すべての検出経路が実装済みであることを意味しない。
+
+新しい理由コードを採用する場合は、検出元、既存コードとの対応、影響するテストを確認し、
+`src/shared/types.ts` と §18 を同時に更新する。
 
 `seek` は restart reason に含めない。  
 seek 後は同じ video、同じ track binding、同じ session を維持し、`cuechange` による字幕更新の再開を待つ。
@@ -846,93 +847,159 @@ runtime state のうち、字幕 truth、UI state、layout state は同じ store
 
 ## 17. module 間の API 境界
 
-初期版の API は必要以上に抽象化しない。  
+初期版の API は必要以上に抽象化しない。
 ただし、DOM・track・truth・UI state・layout state・cleanup の境界は崩さない。
+
+- 複数 module で共有する型の定義は §18 に置く。
+- 各 API 節には公開操作と、その module 固有の入力・出力境界を書く。
+- 保存設定の詳細な型・取得結果・validation は `docs/settings-spec.md` を参照する。
+- 未実装 module の API は設計例として扱い、実装前に現行コードと照合して確定する。
+- ここに API が記載されていても、module 間の接続や実機確認が完了したことは意味しない。
 
 ### `settings-store.ts`
 
-```ts
-type StoredSettings = {
-  primaryLang: string;
-  secondaryLang: string;
-};
+保存設定の読込・保存・validation・normalization を提供する。
 
-async function loadSettings(): Promise<StoredSettings>;
-async function saveSettings(next: StoredSettings): Promise<void>;
-```
+- loadSettings は、正規化済み設定と ready / incomplete / error の状態を返す。
+- saveSettings は、保存成功、validation による拒否、書込失敗を結果として返す。
+- ready の primaryLang は有効な言語とし、secondaryLang は未選択の null を許容する。
+- 設定未完了の内部表現と、保存成功時のデータ形式を区別する。
+- ブラウザ言語の取得や fallback による track 採用は担当しない。
+
+設定 API と結果型の詳細は `docs/settings-spec.md` を正本とする。
+共通の未完了表現は §18 の `StoredSettings` / `ExtensionSettings` を参照する。
 
 ### `playback-root.ts`
 
-```ts
-type PlaybackTarget = {
-  rootEl: HTMLElement;
-  videoEl: HTMLVideoElement;
-  panelMountEl: HTMLElement;
-  layoutTargetEl: HTMLElement;
-};
+playback target の discovery と、target snapshot の比較を提供する。
+共通型は §18 を参照する。
 
-function resolvePlaybackTarget(): PlaybackTarget | null;
+```ts
+function resolvePlaybackTarget(doc?: Document): PlaybackTarget | null;
+
+function comparePlaybackTargetSnapshots(
+  previous: PlaybackTargetSnapshot,
+  next: PlaybackTargetSnapshot,
+): PlaybackTargetComparison;
 ```
+
+readiness 待機や resource の登録・解除は担当しない。
+target の同一性は DOM node 参照を含む snapshot で比較する。
 
 ### `ui-state.ts`
 
 ```ts
-type ExtensionUiState = {
-  extensionEnabled: boolean;
-  panelOpen: boolean;
-};
-
-type UiStateListener = (state: ExtensionUiState) => void;
-
-function createUiStateStore(initialState?: Partial<ExtensionUiState>): {
-  getState(): ExtensionUiState;
-  setExtensionEnabled(enabled: boolean): void;
-  setPanelOpen(open: boolean): void;
-  subscribe(listener: UiStateListener): () => void;
-};
+// 共通型は §18 を参照する。
+function createUiStateStore(
+  initialState?: Partial<ExtensionUiState>,
+): UiStateStore;
 ```
 
 ### `text-track-resolver.ts`
 
+`TextTrack` の正規化と、設定言語に対する primary / secondary の採用判定を行う。
+共通型は §18 を参照する。
+
 ```ts
-type ResolvedSubtitleTrack = {
-  id: string;
-  lang: string;
-  label: string;
-  kind: string;
-  track: TextTrack;
+type TextTrackListLike = ArrayLike<TextTrack>;
+
+type ResolveTrackPairArgs = {
+  textTracks: TextTrackListLike;
+  primaryLang: LanguageCode;
+  secondaryLang: LanguageCode | null;
+  fallbackSecondaryLang?: LanguageCode | null;
 };
 
-type ResolvedTrackPair = {
-  primary: ResolvedSubtitleTrack | null;
-  secondary: ResolvedSubtitleTrack | null;
-};
+function normalizeLanguageCode(value: string | null | undefined): string;
 
-function resolveSubtitleTracks(args: {
-  textTracks: TextTrackList;
-  primaryLang: string;
-  secondaryLang: string;
-}): ResolvedTrackPair;
+function normalizeTextTracks(
+  textTracks: TextTrackListLike,
+): SubtitleTrackCandidate[];
+
+function isSubtitleCandidate(candidate: SubtitleTrackCandidate): boolean;
+
+function findLanguageCandidates(
+  candidates: readonly SubtitleTrackCandidate[],
+  lang: LanguageCode | null,
+): SubtitleTrackCandidate[];
+
+function findShowingTrack(
+  candidates: readonly SubtitleTrackCandidate[],
+): SubtitleTrackCandidate | null;
+
+function resolveTrackPair(args: ResolveTrackPairArgs): ResolvedTrackPair;
+
+function summarizeTrack(
+  track: ResolvedSubtitleTrack | SubtitleTrackCandidate | null,
+): string;
 ```
+
+- language だけで採用せず、kind、label、mode を合わせて判定する。
+- 表示中字幕は `mode === 'showing'` を基準とし、active cue の有無だけでは判定しない。
+- 言語候補の優先順位は、mode、一致度、kind、元の位置の順とする。
+- 一致候補がない役割は null を返し、同じ `TextTrack` を両方の役割に採用しない。
+- `secondaryLang` が null のときだけ、引数の `fallbackSecondaryLang` を利用する。
+- fallback が primary と同じ基本言語なら、secondary は採用しない。
+- 学習言語と母国語の設定上の同一値禁止は `docs/settings-spec.md` に従う。
+- ブラウザ言語の取得、readiness 待機、retry、listener 登録、mode 変更、panel 操作は担当しない。
+- 正規化した mode は取得時点の値であり、再判定時は current video の track を再正規化する。
 
 ### `subtitle-source.ts`
 
+readiness 通過後の current video に対して、採用済み track を bind する。
+共通型は §18、cleanup の失敗契約は §19 を参照する。
+
 ```ts
-type SubtitleCueSnapshot = {
-  primaryCues: TextTrackCue[];
-  secondaryCues: TextTrackCue[];
+type SubtitleSourceVideo = {
+  readonly textTracks: ArrayLike<TextTrack>;
+};
+
+type SubtitleSourceOptions = {
+  logger?: Logger;
 };
 
 type SubtitleSource = {
   bind(pair: ResolvedTrackPair): void;
   unbind(): void;
-  getSnapshot(): SubtitleCueSnapshot;
-  subscribe(listener: () => void): () => void;
+  getSnapshot(): SubtitleSourceSnapshot;
+  subscribe(listener: SubtitleSourceListener): DisposeFn;
   dispose(): void;
 };
 
-function createSubtitleSource(videoEl: HTMLVideoElement): SubtitleSource;
+function createSubtitleSource(
+  videoEl: SubtitleSourceVideo,
+  options?: SubtitleSourceOptions,
+): SubtitleSource;
 ```
+
+#### binding と通知
+
+- current video の `textTracks` に含まれる採用 track だけを bind する。
+- 同じ track の組み合わせへの再 bind では、listener を二重登録しない。
+- cuechange listener は source が所有し、bind 単位の DisposeBag で解除する。
+- 再 bind では旧 binding の解除を試してから、新しい listener を登録する。
+- 通知は bound / unbound / role 付き cuechange とし、cue 本文は通知に含めない。
+- 購読者は必要なときに `getSnapshot()` で cue 一覧を読む。
+- readiness 待機、retry、track 選定、mode 変更、panel / UI 更新は担当しない。
+
+#### snapshot と参照
+
+- bind 入力の track 管理情報は、コピーして内部に保持する。
+- snapshot の pair と track 管理情報は、コピーして外へ返す。
+- cue 配列と各 cue の時刻・本文は、snapshot 取得時に新しく作る。
+- cue の track 情報は、その snapshot 用にコピーした管理情報を参照する。
+- 実際の `TextTrack` はコピーせず、listener 登録先と同じ参照を維持する。
+- snapshot は管理情報と cue の写しであり、ブラウザの track 状態を凍結するものではない。
+
+#### 失敗と破棄
+
+- 購読者の例外は記録し、ほかの購読者への通知を継続する。
+- cue の読取失敗は記録し、その track の cue 配列を空にする。
+- listener 登録失敗時は、登録済み分の解除を試して未 bind に戻す。
+- 解除失敗は記録する。管理上の binding 解除と、実際の listener 解除成功は区別する。
+- dispose は listener の解除を試して購読者を破棄し、unbound を通知しない。
+- dispose 後は bind と新規購読を受け付けず、通知もしない。
+- source は session 単位で生成し、session owner が dispose を保持・実行する。
 
 ### `native-menu-sync.ts`
 
@@ -949,22 +1016,22 @@ function attachNativeMenuSync(args: {
 
 ### `subtitle-block-builder.ts`
 
-```ts
-function buildSubtitleBlocks(snapshot: SubtitleCueSnapshot): SubtitleBlock[];
-```
+primary / secondary の cue 群から `SubtitleBlock[]` を構築する。
+
+入力境界は、source 全体の `SubtitleSourceSnapshot`、
+またはそこから取り出した両言語の cue 配列とする。
+`SubtitleCueSnapshot` は cue 1 件分であり、両言語の配列全体を表す型として使わない。
+
+Phase 5 の実装前に引数の形を確定し、公開 API を本節へ反映する。
+renderer や panel の都合、DOM 操作、source の listener 所有は持ち込まない。
 
 ### `subtitle-history.ts`
 
 ```ts
-type SubtitleHistorySnapshot = {
-  current: SubtitleBlock | null;
-  past: SubtitleBlock[];
-  future: SubtitleBlock[];
-};
-
+// Phase 5 の設計例。共通型は §18 を参照する。
 function deriveSubtitleHistory(
   blocks: SubtitleBlock[],
-  currentTime: number
+  currentTime: number,
 ): SubtitleHistorySnapshot;
 ```
 
@@ -1025,13 +1092,7 @@ function mountPanelOpenCloseButton(args: {
 ### `player-layout.ts`
 
 ```ts
-type PlayerLayoutState = {
-  isApplied: boolean;
-  availableWidth: number | null;
-  playerWidth: number | null;
-  panelWidth: number | null;
-};
-
+// 後続 Phase の設計例。PlayerLayoutState は §18 を参照する。
 type PlayerLayoutController = {
   apply(open: boolean): void;
   reset(): void;
@@ -1047,65 +1108,146 @@ function createPlayerLayout(args: {
 
 ### `session-lifecycle.ts`
 
+現在の controller は readiness 待機・開始停止・状態購読を提供する。
+共通型は §18、cleanup の失敗契約は §19 を参照する。
+
 ```ts
-type StartPlaybackSessionArgs = {
-  target: PlaybackTarget;
-  settings: StoredSettings;
+type SessionStateListener = (state: SessionState) => void;
+
+type SessionLifecycleOptions = {
+  doc?: Document;
+  now?: () => number;
+  retryDelayMs?: number;
+  scheduleRetry?: (
+    callback: () => void,
+    delayMs: number,
+  ) => DisposeFn;
 };
 
-type PlaybackSession = {
-  stop(reason?: RestartReason | 'manual-stop'): void;
+type SessionLifecycleController = {
+  getState(): SessionState;
+  start(target: PlaybackTarget | null, reason?: RestartReason): void;
+  stop(): void;
   dispose(): void;
+  subscribe(listener: SessionStateListener): DisposeFn;
 };
 
-function startPlaybackSession(args: StartPlaybackSessionArgs): PlaybackSession;
+function createSessionLifecycle(
+  options?: SessionLifecycleOptions,
+): SessionLifecycleController;
 ```
+
+- readiness 待機と retry は lifecycle が所有する。
+- 待機 bag は解除前に保持参照から切り離す。
+- 待機 cleanup の失敗は記録し、停止・再開始・破棄の後処理を継続する。
+- getState は state の外側と waiting 情報をコピーし、target と DOM 参照は共有する。
+- dispose 後は新しい開始と購読を受け付けない。
+
+§12〜§13 は session 全体の接続・restart の設計方針を示す。
+現行 controller に記載されていない接続や検出経路が、実装済みであることは意味しない。
 
 ---
 
 ## 18. `src/shared/types.ts` の共通型
 
 `src/shared/types.ts` では、module 境界で共有する最低限の型を定義する。
+本節はその共通型を定義する場所とし、§17 では再定義せず参照する。
+
+StoredSettings は未完了を表現できる内部共通型である。
+保存成功時の必須条件と、settings store が返す ReadySettings は
+`docs/settings-spec.md` を参照する。
 
 ```ts
 export type StoredSettings = {
-  primaryLang: string;
-  secondaryLang: string;
+  primaryLang: LanguageCode | null;
+  secondaryLang: LanguageCode | null;
 };
 
+export type ExtensionSettings = StoredSettings;
+
 export type RestartReason =
-  | 'video-disconnected'
+  | 'initial-start'
+  | 'spa-navigation'
+  | 'playback-target-appeared'
   | 'video-replaced'
-  | 'playback-root-disconnected'
-  | 'spa-target-changed';
+  | 'settings-changed'
+  | 'subtitle-track-changed'
+  | 'subtitle-unavailable'
+  | 'manual-restart'
+  | 'unknown';
 
 export type PlaybackTarget = {
   rootEl: HTMLElement;
   videoEl: HTMLVideoElement;
   panelMountEl: HTMLElement;
   layoutTargetEl: HTMLElement;
+  snapshot: PlaybackTargetSnapshot;
 };
 
+export type PlaybackTargetSnapshot = {
+  rootEl: HTMLElement;
+  videoEl: HTMLVideoElement;
+  panelMountEl: HTMLElement;
+  layoutTargetEl: HTMLElement;
+};
+
+export type PlaybackTargetComparison = {
+  isSameTarget: boolean;
+  hasRootChanged: boolean;
+  hasVideoChanged: boolean;
+  hasPanelMountTargetChanged: boolean;
+  hasLayoutTargetChanged: boolean;
+};
+
+export type LanguageCode = string;
+
+/** 正規化した時点の字幕 track 情報。実際の TextTrack 参照を含む。 */
 export type ResolvedSubtitleTrack = {
   id: string;
-  lang: string;
+  language: LanguageCode;
   label: string;
-  kind: string;
+  kind: TextTrackKind | string;
+  mode: TextTrackMode;
   track: TextTrack;
 };
+
+export type SubtitleTrack = ResolvedSubtitleTrack;
 
 export type ResolvedTrackPair = {
   primary: ResolvedSubtitleTrack | null;
   secondary: ResolvedSubtitleTrack | null;
 };
 
-export type SubtitleCueSnapshot = {
-  primaryCues: TextTrackCue[];
-  secondaryCues: TextTrackCue[];
+export type SubtitleTrackRole = 'primary' | 'secondary';
+
+/** index は正規化時点の textTracks 内の位置であり、永続識別子ではない。 */
+export type SubtitleTrackCandidate = ResolvedSubtitleTrack & {
+  index: number;
 };
 
+/** cue 1 件分の一時表現。SubtitleBlock[] の構築前に利用する。 */
+export type SubtitleCueSnapshot = {
+  startTime: number;
+  endTime: number;
+  text: string;
+  track: ResolvedSubtitleTrack | null;
+};
+
+/** source 全体の取得時点の状態。cue 単体の snapshot とは区別する。 */
+export type SubtitleSourceSnapshot = {
+  pair: ResolvedTrackPair;
+  primaryCues: SubtitleCueSnapshot[];
+  secondaryCues: SubtitleCueSnapshot[];
+};
+
+export type SubtitleSourceChange =
+  | { type: 'bound' }
+  | { type: 'unbound' }
+  | { type: 'cuechange'; role: SubtitleTrackRole };
+
+export type SubtitleSourceListener = (change: SubtitleSourceChange) => void;
+
 export type SubtitleBlock = {
-  id: string;
   startTime: number;
   endTime: number;
   primaryText: string;
@@ -1118,23 +1260,69 @@ export type SubtitleHistorySnapshot = {
   future: SubtitleBlock[];
 };
 
+export type SubtitleHistoryView = SubtitleHistorySnapshot;
+
 export type ExtensionUiState = {
   extensionEnabled: boolean;
   panelOpen: boolean;
 };
 
+export type UiState = ExtensionUiState;
+
+export type UiStateListener = (state: ExtensionUiState) => void;
+
 export type PlayerLayoutState = {
-  isApplied: boolean;
+  active: boolean;
   availableWidth: number | null;
   playerWidth: number | null;
   panelWidth: number | null;
 };
 
-export type PlaybackSessionState = {
-  target: PlaybackTarget | null;
-  video: HTMLVideoElement | null;
-  restartReason: RestartReason | null;
-  subtitleReady: boolean;
+export type WaitingState = {
+  startedAt: number;
+  retryCount: number;
+  targetVideo: HTMLVideoElement;
+};
+
+export type PlaybackSessionState =
+  | {
+      status: 'idle';
+      target: null;
+      waiting: null;
+      reason: RestartReason | null;
+    }
+  | {
+      status: 'waiting';
+      target: PlaybackTarget | null;
+      waiting: WaitingState | null;
+      reason: RestartReason;
+    }
+  | {
+      status: 'running';
+      target: PlaybackTarget;
+      waiting: null;
+      reason: RestartReason;
+    }
+  | {
+      status: 'stopped';
+      target: PlaybackTarget | null;
+      waiting: null;
+      reason: RestartReason | null;
+    };
+
+export type SessionState = PlaybackSessionState;
+
+export type DisposeFn = () => void;
+
+export type Disposable = {
+  dispose: DisposeFn;
+};
+
+export type UiStateStore = {
+  getState(): ExtensionUiState;
+  setExtensionEnabled(enabled: boolean): void;
+  setPanelOpen(open: boolean): void;
+  subscribe(listener: UiStateListener): DisposeFn;
 };
 ```
 
@@ -1148,14 +1336,33 @@ export type PlaybackSessionState = {
 ## 19. `src/shared/dispose.ts` の cleanup helper
 
 `src/shared/dispose.ts` は cleanup の共通基盤だけを提供する。
+`DisposeFn` と `Disposable` の定義元は `src/shared/types.ts` とする。
 
 責務は次の通りとする。
 
-- `DisposeFn` の型定義
 - disposer の登録
 - reverse-order cleanup
 - 二重 dispose 防止
 - 複数 module の `dispose()` を1つに合成する helper
+- cleanup 失敗時にも残りを試し、失敗を集約して報告する
+
+#### cleanup の実行と失敗
+
+- bag の dispose は、登録の逆順で各 cleanup を一度ずつ試す。
+- 途中で例外が発生しても、残りの cleanup を続ける。
+- 失敗があれば、全件の試行後に AggregateError を投げる。
+- 2 回目以降の bag.dispose は何もしない。失敗した cleanup も自動再試行しない。
+- add が返す個別 disposer も、成功・失敗にかかわらず一度だけ試す。
+- 個別 disposer の直接実行時は、その cleanup の例外をそのまま呼び出し元へ返す。
+- dispose 済み bag への add は、その場で cleanup を実行する。失敗時は例外をそのまま返す。
+- composeDisposers が返す disposer も、bag と同じ逆順実行・一度化・失敗集約の契約を持つ。
+
+#### owner 側の処理
+
+- bag の呼び出し側は、cleanup 失敗を記録し、必要な参照整理や停止処理を継続する。
+- resource の実際の解除処理は各 owner に置き、共有基盤へ移さない。
+- 「すべての解除を試したこと」と「すべての解除が成功したこと」を区別する。
+- 解除に失敗した resource が消えたとは扱わず、失敗をログに残す。
 
 公開 API は次の程度に留める。
 
