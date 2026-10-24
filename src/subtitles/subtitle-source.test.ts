@@ -590,7 +590,7 @@ describe('createSubtitleSource', () => {
     expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
   });
 
-  // S1: 実際の解除に失敗しても、旧 binding からの通知は無効化する。
+  // 実際の解除に失敗しても、旧 binding からの通知は無効化する。
   it('解除に失敗した旧 listener は unbind 後に通知しない', () => {
     const { en, pair, source } = createFixture();
     const listener = vi.fn();
@@ -625,7 +625,7 @@ describe('createSubtitleSource', () => {
     }
   });
 
-  // S2: 新 binding に含まれない旧 track のイベントを遮断する。
+  // 新 binding に含まれない旧 track のイベントを遮断する。
   it('別 pair への再 bind 後は解除に失敗した旧 track から通知しない', () => {
     const { ja, en, ko, video, pair, source } = createFixture();
     const listener = vi.fn();
@@ -668,7 +668,7 @@ describe('createSubtitleSource', () => {
     }
   });
 
-  // S3: 同じ track の旧 listener が残っても、新 binding の通知だけを通す。
+  // 同じ track の旧 listener が残っても、新 binding の通知だけを通す。
   it('同じ track を含む再 bind 後に旧 listener が残っても通知を重複させない', () => {
     const { ja, en, video, pair, source } = createFixture();
     const listener = vi.fn();
@@ -713,7 +713,7 @@ describe('createSubtitleSource', () => {
     }
   });
 
-  // S4: 通知開始後でも dispose された時点で、後続購読者への通知を止める。
+  // 通知開始後でも dispose された時点で、後続購読者への通知を止める。
   it('購読者が通知中に dispose したら後続の購読者を呼ばない', () => {
     const { ja, en, pair, source } = createFixture();
     const firstListener = vi.fn((change: SubtitleSourceChange) => {
