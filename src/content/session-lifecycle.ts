@@ -1,34 +1,33 @@
 /**
- * session-lifecycle.ts
- *
- * playback session の開始停止、readiness 待機、retry、video 差し替え検知を所有する。
- * 待機資源は bag 単位で解除し、解除失敗は記録して停止・再開始を継続する。
- * 解除に失敗して旧 retry が残っても、現在の待機以外からは状態を更新しない。
- * subtitle source / track resolver / panel renderer の起動はまだ行わない。
+ * playback session の開始停止、readiness 待機、video 差し替え検知を所有する。
+ * 字幕接続の詳細は subtitle-session.ts に委譲し、返された dispose を保持する。
+ * 待機と字幕接続は、旧参照を切り離してから cleanup を試す。
+ * track 選定、cue 読取、字幕ログ、panel 描画、native menu 同期は担当しない。
  */
 import { createDisposeBag, type DisposeBag } from '../shared/dispose';
+import type { ReadySettings } from '../settings/settings-store';
+import { createSubtitleSession } from '../subtitles/subtitle-session';
 import {
   comparePlaybackTargetSnapshots,
   resolvePlaybackTarget,
 } from './playback-root';
 import type {
+  Disposable,
   DisposeFn,
+  LanguageCode,
   PlaybackTarget,
   RestartReason,
   SessionState,
   WaitingState,
 } from '../shared/types';
 
-/** readiness 未通過時に再確認する間隔。 */
+/** readiness を再確認する間隔。ミリ秒単位。 */
 const DEFAULT_READINESS_RETRY_DELAY_MS = 250;
 
-/**
- * lifecycle の状態変化を受け取る callback。
- * content coordinator はこの通知だけを購読して session の外側へ状態を伝える。
- */
+/** session の状態更新を受け取る callback。 */
 export type SessionStateListener = (state: SessionState) => void;
 
-/** session lifecycle が公開する最小 controller。 */
+/** session の状態取得・開始停止・破棄・購読を提供する controller。 */
 export type SessionLifecycleController = {
   getState(): SessionState;
   start(target: PlaybackTarget | null, reason?: RestartReason): void;
@@ -38,22 +37,32 @@ export type SessionLifecycleController = {
 };
 
 /**
- * lifecycle の外から差し替え可能にする依存群。
- * test では clock / retry scheduler / document を差し替えて再試行を決定的に観測する。
+ * readiness 通過後の字幕接続に使う入力。
+ * 保存設定とブラウザ言語は、content coordinator が取得して渡す。
+ */
+export type SessionSubtitleInput = {
+  settings: ReadySettings;
+  fallbackSecondaryLang?: LanguageCode | null;
+};
+
+/**
+ * lifecycle の入力と、テストで差し替える依存。
+ * subtitle を省略した場合は、字幕接続なしで readiness の状態管理だけを行う。
  */
 export type SessionLifecycleOptions = {
   doc?: Document;
   now?: () => number;
   retryDelayMs?: number;
   scheduleRetry?: (callback: () => void, delayMs: number) => DisposeFn;
+  subtitle?: SessionSubtitleInput;
 };
 
 /**
- * 停止中または開始前の state を作る。
+ * 開始前または停止中の state を作る。
  *
  * @param status idle または stopped。
- * @param target 現在ひも付いている target。未解決なら null。
- * @returns waiting を持たない停止系 state。
+ * @param target 停止対象の target。開始前は null。
+ * @returns waiting を持たない state。
  */
 function createInactiveState(status: 'idle', target: null): SessionState;
 function createInactiveState(
@@ -73,94 +82,58 @@ function createInactiveState(
     };
   }
 
-  return {
-    status: 'stopped',
-    target,
-    waiting: null,
-    reason: null,
-  };
+  return { status: 'stopped', target, waiting: null, reason: null };
 }
 
 /**
- * 待機中 state を作る。
+ * 待機中の state を作る。
  *
- * @param target 現在監視する playback target。
- * @param waiting readiness 待機の詳細。
- * @param reason この待機に入った理由。
- * @returns waiting state。
+ * @param target 現在監視する target。
+ * @param waiting 待機開始時刻と retry 情報。
+ * @param reason 待機に入った理由。
+ * @returns readiness 待機中の state。
  */
 const createWaitingState = (
   target: PlaybackTarget,
   waiting: WaitingState,
   reason: RestartReason,
-): SessionState => ({
-  status: 'waiting',
-  target,
-  waiting,
-  reason,
-});
+): SessionState => ({ status: 'waiting', target, waiting, reason });
 
 /**
- * ready 到達後の running state を作る。
+ * 外部へ渡す state を複製する。
  *
- * @param target ready になった playback target。
- * @param reason この session を開始した理由。
- * @returns running state。
- */
-const createRunningState = (
-  target: PlaybackTarget,
-  reason: RestartReason,
-): SessionState => ({
-  status: 'running',
-  target,
-  waiting: null,
-  reason,
-});
-
-/**
- * state の外側と waiting 情報を複製する。
- * target と DOM 要素の参照は維持する。
- *
- * @param state 複製元 state。
- * @returns state の外側と waiting 情報を変更しても内部へ伝わらない snapshot。
+ * @param state 複製元。
+ * @returns 外側と waiting の写し。target と DOM の参照は共有する。
  */
 const cloneState = (state: SessionState): SessionState => {
   if (state.status !== 'waiting' || state.waiting === null) {
     return { ...state };
   }
 
-  return {
-    ...state,
-    waiting: {
-      ...state.waiting,
-    },
-  };
+  return { ...state, waiting: { ...state.waiting } };
 };
 
 /**
- * setTimeout ベースの retry 登録を disposer 付きに正規化する。
+ * timeout で readiness の再確認を予約する。
  *
- * @param callback retry 時に実行する callback。
- * @param delayMs retry までの待機時間。ミリ秒単位。
- * @returns 呼び出し側の waiting bag が保持して実行する timeout 解除関数。
+ * @param callback timeout 到達時に実行する処理。
+ * @param delayMs 待機時間。ミリ秒単位。
+ * @returns 待機 bag が保持・実行する timeout 解除関数。
  */
 const scheduleTimeoutRetry = (
   callback: () => void,
   delayMs: number,
 ): DisposeFn => {
   const timeoutId = window.setTimeout(callback, delayMs);
-
   return () => {
     window.clearTimeout(timeoutId);
   };
 };
 
 /**
- * readiness 待機だけにぶら下がる監視資源を張り替える holder を作る。
- * 解除前に参照を切り離し、残った旧 callback が現在の待機として動くことを防ぐ。
- * 解除失敗は記録し、session の停止や次の待機を妨げない。
+ * 現在の待機 bag を保持し、旧 callback の無効化と cleanup を行う。
  *
- * @returns 待機 bag の保持、同一性確認、cleanup を行う holder。
+ * @returns 待機の置換・同一性確認・解除を行う holder。
  */
 const createWaitingBagHolder = (): {
   replace(nextBag: DisposeBag | null): void;
@@ -169,15 +142,11 @@ const createWaitingBagHolder = (): {
 } => {
   let current: DisposeBag | null = null;
 
-  /**
-   * 現在の待機 bag を先に切り離してから、cleanup を試す。
-   * 同じ bag の再解除と、解除失敗による session 後処理の中断を防ぐ。
-   */
+  /** 旧 callback を無効化してから cleanup を試し、失敗は記録する。 */
   const releaseCurrent = (): void => {
     const bag = current;
-    // 実際の解除に失敗しても、旧 callback の同一性確認はここから false になる。
+    // 解除に失敗しても、旧 callback を現在の待機として扱わない。
     current = null;
-
     if (bag === null) {
       return;
     }
@@ -194,9 +163,9 @@ const createWaitingBagHolder = (): {
 
   return {
     /**
-     * 旧待機を無効化して解除を試し、新しい待機 bag を保持する。
+     * 旧待機の解除を試して、新しい bag を保持する。
      *
-     * @param nextBag 次に保持する bag。null なら待機なしにする。
+     * @param nextBag 新しい待機 bag。null は待機なし。
      */
     replace(nextBag): void {
       releaseCurrent();
@@ -204,16 +173,16 @@ const createWaitingBagHolder = (): {
     },
 
     /**
-     * 指定した bag が、現在の待機を所有しているかを確認する。
+     * callback の登録元が現在の待機かを確認する。
      *
-     * @param bag retry callback の登録元となる待機 bag。
-     * @returns 現在保持している bag と同じ参照なら true。
+     * @param bag 確認する待機 bag。
+     * @returns 現在保持する bag と同じ参照なら true。
      */
     isCurrent(bag: DisposeBag): boolean {
       return current === bag;
     },
 
-    /** 現在の待機を無効化して bag を切り離し、cleanup を試す。 */
+    /** 現在の待機を無効化し、cleanup を試す。 */
     dispose(): void {
       releaseCurrent();
     },
@@ -221,10 +190,10 @@ const createWaitingBagHolder = (): {
 };
 
 /**
- * session lifecycle controller を作る。
+ * playback session の lifecycle を作る。
  *
- * @param options clock / retry / document を差し替えるための任意依存。
- * @returns playback session の開始停止と状態購読を提供する controller。
+ * @param options 依存の差し替えと任意の字幕入力。省略時は readiness のみ扱う。
+ * @returns 呼び出し側が保持し、終了時に dispose する controller。
  */
 export const createSessionLifecycle = (
   options: SessionLifecycleOptions = {},
@@ -234,13 +203,23 @@ export const createSessionLifecycle = (
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_READINESS_RETRY_DELAY_MS;
   const scheduleRetry = options.scheduleRetry ?? scheduleTimeoutRetry;
   const listeners = new Set<SessionStateListener>();
-  const lifecycleBag = createDisposeBag();
   const waitingBagHolder = createWaitingBagHolder();
 
+  // 呼び出し元による設定の変更を、開始済み lifecycle へ伝えない。
+  const subtitleInput =
+    options.subtitle === undefined
+      ? null
+      : {
+        settings: { ...options.subtitle.settings },
+        fallbackSecondaryLang:
+          options.subtitle.fallbackSecondaryLang ?? null,
+      };
+
   let state: SessionState = createInactiveState('idle', null);
+  let subtitleSession: Disposable | null = null;
   let disposed = false;
 
-  /** 登録済み listener へ最新 state を通知する。 */
+  /** 登録済み listener へ、最新 state の写しを通知する。 */
   const notify = (): void => {
     const snapshot = cloneState(state);
     listeners.forEach((listener) => {
@@ -249,52 +228,101 @@ export const createSessionLifecycle = (
   };
 
   /**
-   * state を更新して listener へ通知する。
+   * state を更新して購読者へ通知する。
    *
-   * @param next 更新後 state。
+   * @param next 更新後の state。
    */
   const setState = (next: SessionState): void => {
     state = next;
     notify();
   };
 
-  /**
-   * waiting 中の target を再解決し、旧 target との差分を返す。
-   *
-   * @param current 現在の session target。
-   * @returns 再解決 target。対象が見つからない場合は null。
-   */
-  const resolveNextTarget = (current: PlaybackTarget): PlaybackTarget | null => {
-    const next = resolvePlaybackTarget(doc);
-    if (!next) {
-      return null;
+  /** 字幕接続を切り離して dispose を試し、失敗後も後処理を継続する。 */
+  const releaseSubtitleSession = (): void => {
+    const session = subtitleSession;
+    subtitleSession = null;
+    if (session === null) {
+      return;
     }
 
-    const comparison = comparePlaybackTargetSnapshots(current.snapshot, next.snapshot);
-    if (comparison.isSameTarget) {
-      return current;
+    try {
+      session.dispose();
+    } catch (error) {
+      console.error(
+        '[atv-bilingual:cleanup] subtitle session cleanup failed',
+        error,
+      );
     }
-
-    return next;
   };
 
   /**
-   * playback target が subtitle ready かを判定する。
+   * 待機中の target を再解決する。
    *
-   * @param target 判定対象の playback target。
-   * @returns textTracks.length > 0 のとき true。
+   * @param current 現在監視する target。
+   * @returns 同一 snapshot なら current、変化時は新 target、未解決なら null。
+   */
+  const resolveNextTarget = (current: PlaybackTarget): PlaybackTarget | null => {
+    const next = resolvePlaybackTarget(doc);
+    if (next === null) {
+      return null;
+    }
+
+    const comparison = comparePlaybackTargetSnapshots(
+      current.snapshot,
+      next.snapshot,
+    );
+    return comparison.isSameTarget ? current : next;
+  };
+
+  /**
+   * 字幕処理の最小 readiness を判定する。
+   *
+   * @param target 判定する target。
+   * @returns textTracks.length > 0 なら true。
    */
   const isSubtitleReady = (target: PlaybackTarget): boolean =>
     target.videoEl.textTracks.length > 0;
 
   /**
-   * waiting bag を current target 用に張り替える。
-   * retry は登録元の bag が現在の待機である間だけ実行する。
+   * ready な target の字幕接続を開始し、running を通知する。
+   * running は readiness 通過を表し、字幕取得成功を保証しない。
    *
-   * @param target 現在監視する playback target。
-   * @param reason waiting に入った理由。
-   * @param retryCount 今回までの retry 回数。
-   * @param startedAt waiting 開始時刻。now() と同じ時間単位。
+   * @param target readiness を通過した target。
+   * @param reason session の開始理由。
+   */
+  const enterRunning = (
+    target: PlaybackTarget,
+    reason: RestartReason,
+  ): void => {
+    waitingBagHolder.dispose();
+    releaseSubtitleSession();
+
+    if (subtitleInput !== null) {
+      try {
+        // source の生成・購読・bind は字幕接続 module に閉じ込める。
+        subtitleSession = createSubtitleSession({
+          videoEl: target.videoEl,
+          settings: subtitleInput.settings,
+          fallbackSecondaryLang: subtitleInput.fallbackSecondaryLang,
+        });
+      } catch (error) {
+        console.error(
+          '[atv-bilingual:subtitle] subtitle session start failed',
+          error,
+        );
+      }
+    }
+
+    setState({ status: 'running', target, waiting: null, reason });
+  };
+
+  /**
+   * 現在の target 用に待機を張り替える。
+   *
+   * @param target 監視する target。
+   * @param reason 待機に入った理由。
+   * @param retryCount これまでの再確認回数。
+   * @param startedAt 待機開始時刻。now() と同じ時間単位。
    */
   const enterWaiting = (
     target: PlaybackTarget,
@@ -303,57 +331,52 @@ export const createSessionLifecycle = (
     startedAt: number,
   ): void => {
     const waitingBag = createDisposeBag();
-    // 旧 waiting を先に無効化して解除を試し、次の retry は新しい bag だけで所有する。
+    // 旧待機を無効化してから、新しい retry の owner を確定する。
     waitingBagHolder.replace(waitingBag);
+    setState(
+      createWaitingState(
+        target,
+        { startedAt, retryCount, targetVideo: target.videoEl },
+        reason,
+      ),
+    );
 
-    const waitingState: WaitingState = {
-      startedAt,
-      retryCount,
-      targetVideo: target.videoEl,
-    };
-
-    setState(createWaitingState(target, waitingState, reason));
-
-    // 状態通知中に stop / start / dispose された場合は、旧待機へ retry を登録しない。
+    // 状態通知中に停止・再開始された場合、旧待機へ retry を追加しない。
     if (disposed || !waitingBagHolder.isCurrent(waitingBag)) {
       return;
     }
 
-    const retryDispose = scheduleRetry(() => {
-      // 解除失敗で残った旧 callback が、停止状態や新しい待機を変更することを防ぐ。
+    /** 現在の待機だけで target と readiness を再確認する。 */
+    const retry = (): void => {
       if (disposed || !waitingBagHolder.isCurrent(waitingBag)) {
         return;
       }
 
       const latestTarget = resolveNextTarget(target);
-      if (!latestTarget) {
+      if (latestTarget === null) {
         enterWaiting(target, reason, retryCount + 1, startedAt);
         return;
       }
-
       if (latestTarget.videoEl !== target.videoEl) {
-        // video identity が変わったら、旧 waiting を引き継がず session を張り直す。
+        // video 差し替えでは旧待機を引き継がず、新 target で開始し直す。
         start(latestTarget, 'video-replaced');
         return;
       }
-
       if (isSubtitleReady(latestTarget)) {
-        // ready 到達後は旧 callback を無効化し、待機資源の解除を試して running へ移る。
-        waitingBagHolder.dispose();
-        setState(createRunningState(latestTarget, reason));
+        enterRunning(latestTarget, reason);
         return;
       }
 
       enterWaiting(latestTarget, reason, retryCount + 1, startedAt);
-    }, retryDelayMs);
+    };
 
-    waitingBag.add(retryDispose);
+    waitingBag.add(scheduleRetry(retry, retryDelayMs));
   };
 
   /**
-   * target を元に session を開始または再開始する。
+   * 旧資源の解除を試して、session を開始または再開始する。
    *
-   * @param target 開始対象。null なら target 未解決の waiting state にする。
+   * @param target 開始対象。null は target 未解決の waiting とする。
    * @param reason 開始理由。省略時は initial-start。
    */
   const start = (
@@ -364,95 +387,69 @@ export const createSessionLifecycle = (
       return;
     }
 
-    // 旧 callback を無効化して解除を試し、次の開始処理へ進む。
+    // 新しい接続を作る前に、旧字幕接続と retry を止める。
+    releaseSubtitleSession();
     waitingBagHolder.dispose();
-
-    if (!target) {
-      setState({
-        status: 'waiting',
-        target: null,
-        waiting: null,
-        reason,
-      });
+    if (target === null) {
+      setState({ status: 'waiting', target: null, waiting: null, reason });
       return;
     }
-
     if (isSubtitleReady(target)) {
-      // 初回解決時点で ready なら waiting を経由せず、そのまま running に入る。
-      setState(createRunningState(target, reason));
+      enterRunning(target, reason);
       return;
     }
 
     const previousWaiting = state.status === 'waiting' ? state.waiting : null;
-    const startedAt = previousWaiting?.startedAt ?? now();
-    const retryCount = previousWaiting?.retryCount ?? 0;
-
-    enterWaiting(target, reason, retryCount, startedAt);
+    enterWaiting(
+      target,
+      reason,
+      previousWaiting?.retryCount ?? 0,
+      previousWaiting?.startedAt ?? now(),
+    );
   };
 
-  /**
-   * 現在の waiting / running session を停止する。
-   * 待機 callback は先に無効化し、cleanup の失敗は記録して stopped への更新を継続する。
-   * stop は複数回呼ばれても cleanup を 1 回だけにする。
-   */
+  /** 字幕接続と待機の解除を試し、停止状態へ更新する。 */
   const stop = (): void => {
     if (disposed || state.status === 'stopped') {
       return;
     }
 
+    releaseSubtitleSession();
     waitingBagHolder.dispose();
-    const target = state.target;
-    setState(createInactiveState('stopped', target));
+    setState(createInactiveState('stopped', state.target));
   };
-
-  // 待機解除の失敗は holder が受け止めるため、購読者の破棄まで進められる。
-  lifecycleBag.add(() => {
-    waitingBagHolder.dispose();
-    listeners.clear();
-  });
 
   return {
     /**
-     * 現在の session state を取得する。
+     * 現在の state を取得する。
      *
-     * @returns state の外側と waiting 情報を複製した snapshot。target と DOM 参照は共有する。
+     * @returns 外側と waiting の写し。target と DOM の参照は共有する。
      */
     getState(): SessionState {
       return cloneState(state);
     },
 
-    /**
-     * playback target を受け取って session を開始または再開始する。
-     *
-     * @param target 開始対象。null なら target 未解決として待機する。
-     * @param reason 開始理由。省略時は initial-start。
-     */
     start,
-
-    /** 現在の session を停止する。 */
     stop,
 
-    /**
-     * lifecycle 全体を破棄する。
-     * 待機 cleanup の失敗は記録し、購読解除と停止状態への更新を継続する。
-     * dispose は複数回呼ばれても 1 回だけ cleanup する。
-     */
+    /** 資源の解除を試し、購読者を破棄する。2 回目以降は何もしない。 */
     dispose(): void {
       if (disposed) {
         return;
       }
 
       disposed = true;
+      releaseSubtitleSession();
       waitingBagHolder.dispose();
-      lifecycleBag.dispose();
-      setState(createInactiveState('stopped', state.target));
+      listeners.clear();
+      state = createInactiveState('stopped', state.target);
     },
 
     /**
-     * session state 更新を購読する。
+     * session の状態更新を購読する。
      *
-     * @param listener state 更新ごとに呼ばれる callback。
-     * @returns 呼び出し側が保持して実行する購読解除関数。dispose 済みなら no-op。
+     * @param listener 更新通知を受け取る callback。
+     * @returns 呼び出し側が保持・実行する購読解除関数。破棄後は no-op。
      */
     subscribe(listener: SessionStateListener): DisposeFn {
       if (disposed) {
@@ -460,7 +457,6 @@ export const createSessionLifecycle = (
       }
 
       listeners.add(listener);
-
       return () => {
         listeners.delete(listener);
       };

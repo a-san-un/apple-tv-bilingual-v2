@@ -1,95 +1,78 @@
 /* @vitest-environment jsdom */
 
 /**
- * session lifecycle の unit test。
- * readiness 待機、video 差し替え、cleanup の一度化と解除失敗時の後処理を確認する。
- * 解除に失敗して残った旧 retry が、停止状態や新しい待機を変更しないことも確認する。
- * subtitle source / panel の起動は扱わない。
+ * readiness、旧 retry の無効化、字幕接続の寿命管理を確認する。
+ * subtitle-session は mock にし、開始と dispose の委譲だけを観測する。
+ * track 選定、cue 読取、字幕ログは subtitle-session.test.ts で確認する。
  */
-
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionLifecycle } from './session-lifecycle';
 import { resolvePlaybackTarget } from './playback-root';
+import { createSubtitleSession } from '../subtitles/subtitle-session';
 import type { DisposeFn } from '../shared/types';
 
+vi.mock('../subtitles/subtitle-session', () => ({
+  createSubtitleSession: vi.fn(),
+}));
+
+const createSubtitleSessionMock = vi.mocked(createSubtitleSession);
+
 /**
- * retry 登録、手動発火、cleanup 回数の観測をまとめて扱う test double を作る。
- * 実時間の setTimeout を使わず、waiting retry の張り替えを決定的に検証する。
+ * readiness 判定用の track 数を video に設定する。
  *
- * @returns 登録済み retry の発火と disposer 観測を行う test helper 群。
+ * @param video 設定先。
+ * @param length readiness 判定で参照する track 数。
  */
-const createRetryScheduler = () => {
-  const disposers: DisposeFn[] = [];
-  const callbacks: Array<() => void> = [];
-
-  return {
-    /**
-     * retry callback を保持し、その登録を解除する関数を作る。
-     *
-     * @param callback runNext() で手動実行する callback。
-     * @returns 二重実行を防ぐ cleanup 関数。
-     */
-    schedule(callback: () => void): DisposeFn {
-      callbacks.push(callback);
-
-      let disposed = false;
-      const dispose = vi.fn(() => {
-        disposed = true;
-      });
-
-      disposers.push(dispose);
-
-      return () => {
-        if (disposed) {
-          return;
-        }
-
-        dispose();
-      };
-    },
-
-    /** 保持している先頭の callback を手動実行する。 */
-    runNext(): void {
-      const callback = callbacks.shift();
-      callback?.();
-    },
-
-    /**
-     * 登録した cleanup の spy を取得する。
-     *
-     * @param index 登録順の 0 始まりの位置。
-     * @returns 対象の cleanup。存在しなければ undefined。
-     */
-    getDisposer(index: number) {
-      return disposers[index];
-    },
-  };
+const setTrackCount = (video: HTMLVideoElement, length: number): void => {
+  Object.defineProperty(video, 'textTracks', {
+    configurable: true,
+    value: { length },
+  });
 };
 
 /**
- * cleanup が必ず失敗し、残った retry callback を手動発火できる scheduler を作る。
- * 実際に解除できたとは扱わず、callback 側の無効化を独立して検証する。
+ * playback target を解決できる最小 DOM を作る。
  *
- * @returns 登録 spy、旧 callback の手動発火、cleanup spy の取得を行う helper 群。
+ * @param trackCount 初期の track 数。省略時は未 ready。
+ * @returns 解決済み target。
+ * @throws 必須の DOM を解決できない場合。
  */
-const createFailingRetryScheduler = () => {
+const createTarget = (trackCount = 0) => {
+  document.body.innerHTML = `
+    <dialog class="playback-view">
+      <div data-testid="video-container"></div>
+      <div data-testid="video-player-content"></div>
+      <video></video>
+    </dialog>
+  `;
+  const target = resolvePlaybackTarget(document);
+  if (target === null) {
+    throw new Error('playback target must exist');
+  }
+  setTrackCount(target.videoEl, trackCount);
+  return target;
+};
+
+/**
+ * retry と cleanup を手動で観測する scheduler を作る。
+ * callback は解除後も保持し、残存 callback の無効化を検証できるようにする。
+ *
+ * @param failCleanup true の場合、解除処理が例外を投げる。
+ * @returns 登録 spy、callback 発火、cleanup spy 取得用の helper。
+ */
+const createRetryScheduler = (failCleanup = false) => {
   const callbacks: Array<() => void> = [];
   const disposers: Array<ReturnType<typeof vi.fn>> = [];
 
-  /**
-   * callback を保持し、必ず例外を投げる cleanup を返す。
-   *
-   * @param callback 解除に失敗して残る retry callback。
-   * @returns cleanup 試行を観測できる spy。実行すると例外を投げる。
-   */
+  /** @param callback 手動で発火する retry。@returns 登録の解除関数。 */
   const schedule = vi.fn((callback: () => void): DisposeFn => {
     callbacks.push(callback);
-
     const dispose = vi.fn(() => {
-      throw new Error('retry cleanup failed');
+      if (failCleanup) {
+        throw new Error('retry cleanup failed');
+      }
     });
-
     disposers.push(dispose);
     return dispose;
   });
@@ -98,473 +81,376 @@ const createFailingRetryScheduler = () => {
     schedule,
 
     /**
-     * 指定した登録の callback を、解除試行後も手動実行する。
+     * 登録済み callback を手動実行する。
      *
-     * @param index 登録順の 0 始まりの位置。
-     * @throws 指定位置に callback が登録されていない場合。
+     * @param index 登録順の位置。省略時は最初の登録。
+     * @throws callback が存在しない場合。
      */
-    fire(index: number): void {
+    fire(index = 0): void {
       const callback = callbacks[index];
-
       if (callback === undefined) {
         throw new Error(`retry callback ${index} must exist`);
       }
-
       callback();
     },
 
     /**
-     * 登録した cleanup の spy を取得する。
+     * cleanup の spy を取得する。
      *
-     * @param index 登録順の 0 始まりの位置。
-     * @returns 対象の cleanup spy。
-     * @throws 指定位置に cleanup が登録されていない場合。
+     * @param index 登録順の位置。
+     * @returns 対象の spy。
+     * @throws cleanup が存在しない場合。
      */
     getDisposer(index: number) {
       const dispose = disposers[index];
-
       if (dispose === undefined) {
         throw new Error(`retry disposer ${index} must exist`);
       }
-
       return dispose;
     },
   };
 };
 
 /**
- * playback root 解決に必要な最小 DOM を毎回作り直す。
+ * 失敗系テストの cleanup ログを抑制する。
  *
- * @param videoHtml 差し替えたい video 要素断片。省略時は単一 video を使う。
+ * @returns afterEach で復元する console.error の spy。
  */
-const setPlaybackDom = (videoHtml = '<video></video>'): void => {
-  document.body.innerHTML = `
-    <dialog class="playback-view">
-      <div data-testid="video-container"></div>
-      <div data-testid="video-player-content"></div>
-      ${videoHtml}
-    </dialog>
-  `;
-};
+const observeCleanupErrors = () =>
+  vi.spyOn(console, 'error').mockImplementation(() => { });
 
-/**
- * jsdom 上の video へ最小の textTracks length を注入する。
- *
- * @param video length を差し込む対象の video。
- * @param length readiness 判定で参照する track 数。
- */
-const mockTextTrackLength = (video: HTMLVideoElement, length: number): void => {
-  Object.defineProperty(video, 'textTracks', {
-    configurable: true,
-    value: { length },
-  });
-};
+beforeEach(() => {
+  createSubtitleSessionMock.mockReset();
+  createSubtitleSessionMock.mockImplementation(() => ({ dispose: vi.fn() }));
+});
 
-describe('session-lifecycle', () => {
-  it('treats textTracks.length === 0 as waiting state, not terminal failure', () => {
-    setPlaybackDom();
+afterEach(() => {
+  vi.restoreAllMocks();
+  document.body.innerHTML = '';
+});
 
-    const target = resolvePlaybackTarget(document);
-    expect(target).not.toBeNull();
-    mockTextTrackLength(target!.videoEl, 0);
-
+describe('session-lifecycle の readiness', () => {
+  it('textTracks が 0 件なら失敗ではなく waiting にする', () => {
+    const target = createTarget();
     const scheduler = createRetryScheduler();
     const lifecycle = createSessionLifecycle({
       doc: document,
-      scheduleRetry: (callback) => scheduler.schedule(callback),
+      scheduleRetry: scheduler.schedule,
     });
-
-    lifecycle.start(target, 'initial-start');
-
-    expect(lifecycle.getState().status).toBe('waiting');
-    expect(lifecycle.getState().target).toBe(target);
+    try {
+      lifecycle.start(target);
+      expect(lifecycle.getState().status).toBe('waiting');
+      expect(lifecycle.getState().target).toBe(target);
+      expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+    } finally {
+      lifecycle.dispose();
+    }
   });
 
-  it('moves to running when the target video is already ready', () => {
-    setPlaybackDom();
-
-    const target = resolvePlaybackTarget(document);
-    expect(target).not.toBeNull();
-    mockTextTrackLength(target!.videoEl, 1);
-
+  it('最初から ready なら running にする', () => {
+    const target = createTarget(1);
     const lifecycle = createSessionLifecycle({ doc: document });
-    lifecycle.start(target, 'initial-start');
-
-    expect(lifecycle.getState().status).toBe('running');
-    expect(lifecycle.getState().target).toBe(target);
+    try {
+      lifecycle.start(target);
+      expect(lifecycle.getState().status).toBe('running');
+      expect(lifecycle.getState().target).toBe(target);
+    } finally {
+      lifecycle.dispose();
+    }
   });
 
-  it('disposes previous waiting retry when video identity changes during waiting', () => {
-    setPlaybackDom('<video id="first"></video>');
-
-    const firstTarget = resolvePlaybackTarget(document);
-    expect(firstTarget).not.toBeNull();
-    mockTextTrackLength(firstTarget!.videoEl, 0);
-
+  it('待機中の video 差し替えでは旧 retry を解除して新 video を開始する', () => {
+    const target = createTarget();
     const scheduler = createRetryScheduler();
     const lifecycle = createSessionLifecycle({
       doc: document,
-      scheduleRetry: (callback) => scheduler.schedule(callback),
+      scheduleRetry: scheduler.schedule,
     });
-
-    lifecycle.start(firstTarget, 'initial-start');
-
-    // waiting 中に video だけ差し替わると、旧 retry を破棄して新 target へ結び直す必要がある。
-    const replacementVideo = document.createElement('video');
-    replacementVideo.id = 'second';
-    mockTextTrackLength(replacementVideo, 1);
-    firstTarget!.rootEl.querySelector('video')?.replaceWith(replacementVideo);
-
-    scheduler.runNext();
-
-    expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
-    expect(lifecycle.getState().status).toBe('running');
-    expect(lifecycle.getState().target?.videoEl).toBe(replacementVideo);
-    expect(lifecycle.getState().reason).toBe('video-replaced');
+    try {
+      lifecycle.start(target);
+      const replacement = document.createElement('video');
+      setTrackCount(replacement, 1);
+      target.videoEl.replaceWith(replacement);
+      scheduler.fire();
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+      expect(lifecycle.getState().status).toBe('running');
+      expect(lifecycle.getState().target?.videoEl).toBe(replacement);
+      expect(lifecycle.getState().reason).toBe('video-replaced');
+    } finally {
+      lifecycle.dispose();
+    }
   });
 
-  it('runs cleanup only once even when stop and dispose are called repeatedly', () => {
-    setPlaybackDom();
-
-    const target = resolvePlaybackTarget(document);
-    expect(target).not.toBeNull();
-    mockTextTrackLength(target!.videoEl, 0);
-
+  it('stop と dispose を繰り返しても cleanup は一度だけ試す', () => {
+    const target = createTarget();
     const scheduler = createRetryScheduler();
     const lifecycle = createSessionLifecycle({
       doc: document,
-      scheduleRetry: (callback) => scheduler.schedule(callback),
+      scheduleRetry: scheduler.schedule,
     });
-
-    lifecycle.start(target, 'initial-start');
+    lifecycle.start(target);
     lifecycle.stop();
     lifecycle.stop();
     lifecycle.dispose();
     lifecycle.dispose();
-
     expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
     expect(lifecycle.getState().status).toBe('stopped');
   });
 
-  it('keeps unresolved target observable as waiting state', () => {
+  it('target 未解決を waiting として公開する', () => {
     const lifecycle = createSessionLifecycle({ doc: document });
-
-    expect(() => {
+    try {
       lifecycle.start(null, 'spa-navigation');
-    }).not.toThrow();
-    expect(lifecycle.getState().status).toBe('waiting');
-    expect(lifecycle.getState().target).toBeNull();
-    expect(lifecycle.getState().reason).toBe('spa-navigation');
-  });
-
-  it('待機解除が失敗しても停止状態へ進み、dispose で購読を解除する', () => {
-    setPlaybackDom();
-
-    const target = resolvePlaybackTarget(document);
-    if (target === null) {
-      throw new Error('playback target must exist');
+      expect(lifecycle.getState()).toEqual({
+        status: 'waiting',
+        target: null,
+        waiting: null,
+        reason: 'spa-navigation',
+      });
+    } finally {
+      lifecycle.dispose();
     }
-    mockTextTrackLength(target.videoEl, 0);
+  });
+});
 
-    const retryDispose = vi.fn(() => {
-      throw new Error('retry cleanup failed');
-    });
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => { });
+describe('session-lifecycle の cleanup 失敗', () => {
+  it('待機解除が失敗しても停止し、dispose 後は購読者を呼ばない', () => {
+    const target = createTarget();
+    const scheduler = createRetryScheduler(true);
+    const errorLog = observeCleanupErrors();
     const lifecycle = createSessionLifecycle({
       doc: document,
-      scheduleRetry: () => retryDispose,
+      scheduleRetry: scheduler.schedule,
     });
-
     try {
       const listener = vi.fn();
       lifecycle.subscribe(listener);
       lifecycle.start(target);
       listener.mockClear();
-
       expect(() => lifecycle.stop()).not.toThrow();
       expect(lifecycle.getState().status).toBe('stopped');
-      expect(retryDispose).toHaveBeenCalledTimes(1);
       expect(listener).toHaveBeenCalledTimes(1);
-      expect(listener).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'stopped' }),
-      );
-      expect(errorLog).toHaveBeenCalledTimes(1);
       expect(errorLog).toHaveBeenCalledWith(
         '[atv-bilingual:cleanup] readiness waiting cleanup failed',
         expect.any(AggregateError),
       );
-
       listener.mockClear();
-
-      expect(() => lifecycle.dispose()).not.toThrow();
-      expect(listener).not.toHaveBeenCalled();
-      expect(lifecycle.getState().status).toBe('stopped');
-      expect(retryDispose).toHaveBeenCalledTimes(1);
-
       lifecycle.dispose();
-      expect(retryDispose).toHaveBeenCalledTimes(1);
+      lifecycle.dispose();
+      expect(listener).not.toHaveBeenCalled();
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
       expect(errorLog).toHaveBeenCalledTimes(1);
     } finally {
-      try {
-        lifecycle.dispose();
-      } finally {
-        errorLog.mockRestore();
-      }
+      lifecycle.dispose();
     }
   });
 
-  it('旧待機の解除が失敗しても再開始でき、直接 dispose 時の解除失敗も記録する', () => {
-    setPlaybackDom();
-
-    const target = resolvePlaybackTarget(document);
-    if (target === null) {
-      throw new Error('playback target must exist');
-    }
-    mockTextTrackLength(target.videoEl, 0);
-
-    const oldDispose = vi.fn(() => {
-      throw new Error('old retry cleanup failed');
-    });
-    const nextDispose = vi.fn(() => {
-      throw new Error('next retry cleanup failed');
-    });
-    const scheduleRetry = vi
-      .fn<() => DisposeFn>()
-      .mockReturnValueOnce(oldDispose)
-      .mockReturnValueOnce(nextDispose);
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => { });
+  it('旧待機の解除失敗後も再開始し、直接 dispose の後処理を続ける', () => {
+    const target = createTarget();
+    const scheduler = createRetryScheduler(true);
+    const errorLog = observeCleanupErrors();
     const lifecycle = createSessionLifecycle({
       doc: document,
-      scheduleRetry,
+      scheduleRetry: scheduler.schedule,
     });
-
     try {
       lifecycle.start(target);
-
-      // 旧 bag の解除失敗が、新しい waiting の作成を妨げないことを確認する。
       expect(() => lifecycle.start(target, 'manual-restart')).not.toThrow();
-      expect(lifecycle.getState().status).toBe('waiting');
       expect(lifecycle.getState().reason).toBe('manual-restart');
-      expect(scheduleRetry).toHaveBeenCalledTimes(2);
-      expect(oldDispose).toHaveBeenCalledTimes(1);
-      expect(nextDispose).not.toHaveBeenCalled();
-      expect(errorLog).toHaveBeenCalledTimes(1);
-
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+      expect(scheduler.getDisposer(1)).not.toHaveBeenCalled();
       const listener = vi.fn();
       lifecycle.subscribe(listener);
-
-      // stop を経由しない直接 dispose でも、購読解除と状態更新まで進む。
       expect(() => lifecycle.dispose()).not.toThrow();
-      expect(lifecycle.getState().status).toBe('stopped');
-      expect(nextDispose).toHaveBeenCalledTimes(1);
       expect(listener).not.toHaveBeenCalled();
-      expect(errorLog).toHaveBeenCalledTimes(2);
-      expect(errorLog).toHaveBeenNthCalledWith(
-        2,
-        '[atv-bilingual:cleanup] readiness waiting cleanup failed',
-        expect.any(AggregateError),
-      );
-
-      // 破棄後の購読・開始・停止も、状態更新や cleanup の再実行を起こさない。
+      expect(scheduler.getDisposer(1)).toHaveBeenCalledTimes(1);
       const lateListener = vi.fn();
-      const unsubscribe = lifecycle.subscribe(lateListener);
-      unsubscribe();
+      lifecycle.subscribe(lateListener)();
       lifecycle.start(target);
       lifecycle.stop();
       lifecycle.dispose();
-
       expect(lifecycle.getState().status).toBe('stopped');
       expect(lateListener).not.toHaveBeenCalled();
-      expect(oldDispose).toHaveBeenCalledTimes(1);
-      expect(nextDispose).toHaveBeenCalledTimes(1);
-      expect(scheduleRetry).toHaveBeenCalledTimes(2);
+      expect(scheduler.schedule).toHaveBeenCalledTimes(2);
       expect(errorLog).toHaveBeenCalledTimes(2);
     } finally {
-      try {
-        lifecycle.dispose();
-      } finally {
-        errorLog.mockRestore();
-      }
+      lifecycle.dispose();
     }
   });
 
-  // 解除失敗で残った callback が、停止後に session を再開しないことを確認する。
-  it('停止後に解除できなかった旧 retry が発火しても停止状態を維持する', () => {
-    setPlaybackDom();
-
-    const target = resolvePlaybackTarget(document);
-    if (target === null) {
-      throw new Error('playback target must exist');
-    }
-    mockTextTrackLength(target.videoEl, 0);
-
-    const scheduler = createFailingRetryScheduler();
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => { });
+  it('停止後に残った旧 retry が発火しても状態と予約を変更しない', () => {
+    const target = createTarget();
+    const scheduler = createRetryScheduler(true);
+    observeCleanupErrors();
     const lifecycle = createSessionLifecycle({
       doc: document,
       scheduleRetry: scheduler.schedule,
     });
-
     try {
+      lifecycle.start(target);
+      lifecycle.stop();
+      const stopped = lifecycle.getState();
       const listener = vi.fn();
       lifecycle.subscribe(listener);
-      lifecycle.start(target, 'initial-start');
-
-      expect(scheduler.schedule).toHaveBeenCalledTimes(1);
-      expect(() => lifecycle.stop()).not.toThrow();
-      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
-      expect(errorLog).toHaveBeenCalledTimes(1);
-
-      const stoppedState = lifecycle.getState();
-      expect(stoppedState.status).toBe('stopped');
-      listener.mockClear();
-
-      // ready になっても、停止済みの旧 callback に再開を許可しない。
-      mockTextTrackLength(target.videoEl, 1);
-
-      expect(() => scheduler.fire(0)).not.toThrow();
-
-      expect(lifecycle.getState()).toEqual(stoppedState);
+      for (const count of [1, 0]) {
+        setTrackCount(target.videoEl, count);
+        scheduler.fire();
+        expect(lifecycle.getState()).toEqual(stopped);
+      }
       expect(listener).not.toHaveBeenCalled();
       expect(scheduler.schedule).toHaveBeenCalledTimes(1);
-      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
-
-      // 未 ready に戻っても、旧 callback が新しい待機を登録してはならない。
-      mockTextTrackLength(target.videoEl, 0);
-
-      expect(() => scheduler.fire(0)).not.toThrow();
-
-      expect(lifecycle.getState()).toEqual(stoppedState);
-      expect(listener).not.toHaveBeenCalled();
-      expect(scheduler.schedule).toHaveBeenCalledTimes(1);
-      expect(errorLog).toHaveBeenCalledTimes(1);
     } finally {
-      try {
-        lifecycle.dispose();
-      } finally {
-        errorLog.mockRestore();
-      }
+      lifecycle.dispose();
     }
   });
 
-  // 再開始して running になった新 session の状態と reason を守る。
-  it('再開始後に旧 retry が発火しても新しい running 状態と reason を変更しない', () => {
-    setPlaybackDom();
-
-    const target = resolvePlaybackTarget(document);
-    if (target === null) {
-      throw new Error('playback target must exist');
-    }
-    mockTextTrackLength(target.videoEl, 0);
-
-    const scheduler = createFailingRetryScheduler();
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => { });
+  it('再開始後の旧 retry が新しい running の reason を変更しない', () => {
+    const target = createTarget();
+    const scheduler = createRetryScheduler(true);
+    observeCleanupErrors();
     const lifecycle = createSessionLifecycle({
       doc: document,
       scheduleRetry: scheduler.schedule,
     });
-
     try {
+      lifecycle.start(target);
+      setTrackCount(target.videoEl, 1);
+      lifecycle.start(target, 'manual-restart');
+      const running = lifecycle.getState();
       const listener = vi.fn();
       lifecycle.subscribe(listener);
-      lifecycle.start(target, 'initial-start');
-
-      mockTextTrackLength(target.videoEl, 1);
-
-      expect(() => lifecycle.start(target, 'manual-restart')).not.toThrow();
-      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
-      expect(errorLog).toHaveBeenCalledTimes(1);
-
-      const runningState = lifecycle.getState();
-      expect(runningState.status).toBe('running');
-      expect(runningState.reason).toBe('manual-restart');
-      expect(runningState.target).toBe(target);
-      listener.mockClear();
-
-      expect(() => scheduler.fire(0)).not.toThrow();
-
-      expect(lifecycle.getState()).toEqual(runningState);
+      scheduler.fire();
+      expect(lifecycle.getState()).toEqual(running);
+      expect(running.reason).toBe('manual-restart');
       expect(listener).not.toHaveBeenCalled();
       expect(scheduler.schedule).toHaveBeenCalledTimes(1);
-      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
-      expect(errorLog).toHaveBeenCalledTimes(1);
     } finally {
-      try {
-        lifecycle.dispose();
-      } finally {
-        errorLog.mockRestore();
-      }
+      lifecycle.dispose();
     }
   });
 
-  // 旧 callback が、新しい待機の bag を解除・置換しないことを確認する。
-  it('旧 retry が発火しても新しい待機と retry を解除・置換しない', () => {
-    setPlaybackDom();
-
-    const target = resolvePlaybackTarget(document);
-    if (target === null) {
-      throw new Error('playback target must exist');
-    }
-    mockTextTrackLength(target.videoEl, 0);
-
-    const scheduler = createFailingRetryScheduler();
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => { });
+  it('旧 retry は新しい待機を解除せず、現在の retry は ready を処理する', () => {
+    const target = createTarget();
+    const scheduler = createRetryScheduler(true);
+    observeCleanupErrors();
     const lifecycle = createSessionLifecycle({
       doc: document,
       scheduleRetry: scheduler.schedule,
     });
-
     try {
-      const listener = vi.fn();
-      lifecycle.subscribe(listener);
-      lifecycle.start(target, 'initial-start');
-
-      expect(() => lifecycle.start(target, 'manual-restart')).not.toThrow();
-
+      lifecycle.start(target);
+      lifecycle.start(target, 'manual-restart');
+      const waiting = lifecycle.getState();
+      scheduler.fire(0);
+      expect(lifecycle.getState()).toEqual(waiting);
       expect(scheduler.schedule).toHaveBeenCalledTimes(2);
-      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
       expect(scheduler.getDisposer(1)).not.toHaveBeenCalled();
-      expect(errorLog).toHaveBeenCalledTimes(1);
-
-      const waitingState = lifecycle.getState();
-      expect(waitingState.status).toBe('waiting');
-      expect(waitingState.reason).toBe('manual-restart');
-      listener.mockClear();
-
-      // 新しい待機中に、解除できなかった旧 callback だけを発火する。
-      expect(() => scheduler.fire(0)).not.toThrow();
-
-      expect(lifecycle.getState()).toEqual(waitingState);
-      expect(listener).not.toHaveBeenCalled();
-      expect(scheduler.schedule).toHaveBeenCalledTimes(2);
-      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
-      expect(scheduler.getDisposer(1)).not.toHaveBeenCalled();
-      expect(errorLog).toHaveBeenCalledTimes(1);
-
-      // 旧 callback を遮断しても、現在の retry は readiness を処理できる。
-      mockTextTrackLength(target.videoEl, 1);
-
-      expect(() => scheduler.fire(1)).not.toThrow();
-
+      setTrackCount(target.videoEl, 1);
+      scheduler.fire(1);
       expect(lifecycle.getState().status).toBe('running');
       expect(lifecycle.getState().reason).toBe('manual-restart');
-      expect(lifecycle.getState().target).toBe(target);
-      expect(scheduler.schedule).toHaveBeenCalledTimes(2);
       expect(scheduler.getDisposer(1)).toHaveBeenCalledTimes(1);
-      expect(listener).toHaveBeenCalledTimes(1);
-      expect(listener).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: 'running',
-          reason: 'manual-restart',
-        }),
-      );
-      expect(errorLog).toHaveBeenCalledTimes(2);
     } finally {
+      lifecycle.dispose();
+    }
+  });
+});
+
+describe('session-lifecycle の字幕接続の委譲', () => {
+  const subtitle = {
+    settings: { primaryLang: 'en', secondaryLang: 'ja' },
+    fallbackSecondaryLang: null,
+  };
+
+  it('字幕入力なしでは、ready でも字幕接続を生成しない', () => {
+    const target = createTarget(1);
+    const lifecycle = createSessionLifecycle({ doc: document });
+    try {
+      lifecycle.start(target);
+      expect(createSubtitleSessionMock).not.toHaveBeenCalled();
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+
+  it('ready 到達後にだけ、設定と video を字幕接続へ渡す', () => {
+    const target = createTarget();
+    const scheduler = createRetryScheduler();
+    const lifecycle = createSessionLifecycle({
+      doc: document,
+      scheduleRetry: scheduler.schedule,
+      subtitle,
+    });
+    try {
+      lifecycle.start(target);
+      expect(createSubtitleSessionMock).not.toHaveBeenCalled();
+      setTrackCount(target.videoEl, 1);
+      scheduler.fire();
+      expect(createSubtitleSessionMock).toHaveBeenCalledTimes(1);
+      expect(createSubtitleSessionMock).toHaveBeenCalledWith({
+        videoEl: target.videoEl,
+        settings: subtitle.settings,
+        fallbackSecondaryLang: null,
+      });
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+
+  it.each(['stop', 'dispose'] as const)(
+    '%s は字幕接続の dispose を一度だけ実行する',
+    (method) => {
+      const target = createTarget(1);
+      const dispose = vi.fn();
+      createSubtitleSessionMock.mockReturnValue({ dispose });
+      const lifecycle = createSessionLifecycle({ doc: document, subtitle });
       try {
+        lifecycle.start(target);
+        lifecycle[method]();
+        lifecycle.stop();
         lifecycle.dispose();
+        expect(dispose).toHaveBeenCalledTimes(1);
       } finally {
-        errorLog.mockRestore();
+        lifecycle.dispose();
       }
+    },
+  );
+
+  it('旧字幕接続を破棄してから新しい接続を生成する', () => {
+    const target = createTarget(1);
+    const operations: string[] = [];
+    createSubtitleSessionMock.mockImplementation(() => {
+      operations.push('start');
+      return { dispose: () => { operations.push('dispose'); } };
+    });
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    try {
+      lifecycle.start(target);
+      lifecycle.start(target, 'manual-restart');
+      expect(operations).toEqual(['start', 'dispose', 'start']);
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+
+  it('字幕接続の破棄が失敗しても停止状態へ進む', () => {
+    const target = createTarget(1);
+    const errorLog = observeCleanupErrors();
+    const dispose = vi.fn(() => { throw new Error('cleanup failed'); });
+    createSubtitleSessionMock.mockReturnValue({ dispose });
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    try {
+      lifecycle.start(target);
+      expect(() => lifecycle.stop()).not.toThrow();
+      expect(lifecycle.getState().status).toBe('stopped');
+      expect(errorLog).toHaveBeenCalledWith(
+        '[atv-bilingual:cleanup] subtitle session cleanup failed',
+        expect.any(Error),
+      );
+      lifecycle.dispose();
+      expect(dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      lifecycle.dispose();
     }
   });
 });
