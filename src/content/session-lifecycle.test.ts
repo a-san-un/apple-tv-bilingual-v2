@@ -3,6 +3,7 @@
 /**
  * session lifecycle の unit test。
  * readiness 待機、video 差し替え、cleanup の一度化と解除失敗時の後処理を確認する。
+ * 解除に失敗して残った旧 retry が、停止状態や新しい待機を変更しないことも確認する。
  * subtitle source / panel の起動は扱わない。
  */
 
@@ -62,6 +63,71 @@ const createRetryScheduler = () => {
      */
     getDisposer(index: number) {
       return disposers[index];
+    },
+  };
+};
+
+/**
+ * cleanup が必ず失敗し、残った retry callback を手動発火できる scheduler を作る。
+ * 実際に解除できたとは扱わず、callback 側の無効化を独立して検証する。
+ *
+ * @returns 登録 spy、旧 callback の手動発火、cleanup spy の取得を行う helper 群。
+ */
+const createFailingRetryScheduler = () => {
+  const callbacks: Array<() => void> = [];
+  const disposers: Array<ReturnType<typeof vi.fn>> = [];
+
+  /**
+   * callback を保持し、必ず例外を投げる cleanup を返す。
+   *
+   * @param callback 解除に失敗して残る retry callback。
+   * @returns cleanup 試行を観測できる spy。実行すると例外を投げる。
+   */
+  const schedule = vi.fn((callback: () => void): DisposeFn => {
+    callbacks.push(callback);
+
+    const dispose = vi.fn(() => {
+      throw new Error('retry cleanup failed');
+    });
+
+    disposers.push(dispose);
+    return dispose;
+  });
+
+  return {
+    schedule,
+
+    /**
+     * 指定した登録の callback を、解除試行後も手動実行する。
+     *
+     * @param index 登録順の 0 始まりの位置。
+     * @throws 指定位置に callback が登録されていない場合。
+     */
+    fire(index: number): void {
+      const callback = callbacks[index];
+
+      if (callback === undefined) {
+        throw new Error(`retry callback ${index} must exist`);
+      }
+
+      callback();
+    },
+
+    /**
+     * 登録した cleanup の spy を取得する。
+     *
+     * @param index 登録順の 0 始まりの位置。
+     * @returns 対象の cleanup spy。
+     * @throws 指定位置に cleanup が登録されていない場合。
+     */
+    getDisposer(index: number) {
+      const dispose = disposers[index];
+
+      if (dispose === undefined) {
+        throw new Error(`retry disposer ${index} must exist`);
+      }
+
+      return dispose;
     },
   };
 };
@@ -312,6 +378,186 @@ describe('session-lifecycle', () => {
       expect(oldDispose).toHaveBeenCalledTimes(1);
       expect(nextDispose).toHaveBeenCalledTimes(1);
       expect(scheduleRetry).toHaveBeenCalledTimes(2);
+      expect(errorLog).toHaveBeenCalledTimes(2);
+    } finally {
+      try {
+        lifecycle.dispose();
+      } finally {
+        errorLog.mockRestore();
+      }
+    }
+  });
+
+  // 解除失敗で残った callback が、停止後に session を再開しないことを確認する。
+  it('停止後に解除できなかった旧 retry が発火しても停止状態を維持する', () => {
+    setPlaybackDom();
+
+    const target = resolvePlaybackTarget(document);
+    if (target === null) {
+      throw new Error('playback target must exist');
+    }
+    mockTextTrackLength(target.videoEl, 0);
+
+    const scheduler = createFailingRetryScheduler();
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => { });
+    const lifecycle = createSessionLifecycle({
+      doc: document,
+      scheduleRetry: scheduler.schedule,
+    });
+
+    try {
+      const listener = vi.fn();
+      lifecycle.subscribe(listener);
+      lifecycle.start(target, 'initial-start');
+
+      expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+      expect(() => lifecycle.stop()).not.toThrow();
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+
+      const stoppedState = lifecycle.getState();
+      expect(stoppedState.status).toBe('stopped');
+      listener.mockClear();
+
+      // ready になっても、停止済みの旧 callback に再開を許可しない。
+      mockTextTrackLength(target.videoEl, 1);
+
+      expect(() => scheduler.fire(0)).not.toThrow();
+
+      expect(lifecycle.getState()).toEqual(stoppedState);
+      expect(listener).not.toHaveBeenCalled();
+      expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+
+      // 未 ready に戻っても、旧 callback が新しい待機を登録してはならない。
+      mockTextTrackLength(target.videoEl, 0);
+
+      expect(() => scheduler.fire(0)).not.toThrow();
+
+      expect(lifecycle.getState()).toEqual(stoppedState);
+      expect(listener).not.toHaveBeenCalled();
+      expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+    } finally {
+      try {
+        lifecycle.dispose();
+      } finally {
+        errorLog.mockRestore();
+      }
+    }
+  });
+
+  // 再開始して running になった新 session の状態と reason を守る。
+  it('再開始後に旧 retry が発火しても新しい running 状態と reason を変更しない', () => {
+    setPlaybackDom();
+
+    const target = resolvePlaybackTarget(document);
+    if (target === null) {
+      throw new Error('playback target must exist');
+    }
+    mockTextTrackLength(target.videoEl, 0);
+
+    const scheduler = createFailingRetryScheduler();
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => { });
+    const lifecycle = createSessionLifecycle({
+      doc: document,
+      scheduleRetry: scheduler.schedule,
+    });
+
+    try {
+      const listener = vi.fn();
+      lifecycle.subscribe(listener);
+      lifecycle.start(target, 'initial-start');
+
+      mockTextTrackLength(target.videoEl, 1);
+
+      expect(() => lifecycle.start(target, 'manual-restart')).not.toThrow();
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+
+      const runningState = lifecycle.getState();
+      expect(runningState.status).toBe('running');
+      expect(runningState.reason).toBe('manual-restart');
+      expect(runningState.target).toBe(target);
+      listener.mockClear();
+
+      expect(() => scheduler.fire(0)).not.toThrow();
+
+      expect(lifecycle.getState()).toEqual(runningState);
+      expect(listener).not.toHaveBeenCalled();
+      expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+    } finally {
+      try {
+        lifecycle.dispose();
+      } finally {
+        errorLog.mockRestore();
+      }
+    }
+  });
+
+  // 旧 callback が、新しい待機の bag を解除・置換しないことを確認する。
+  it('旧 retry が発火しても新しい待機と retry を解除・置換しない', () => {
+    setPlaybackDom();
+
+    const target = resolvePlaybackTarget(document);
+    if (target === null) {
+      throw new Error('playback target must exist');
+    }
+    mockTextTrackLength(target.videoEl, 0);
+
+    const scheduler = createFailingRetryScheduler();
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => { });
+    const lifecycle = createSessionLifecycle({
+      doc: document,
+      scheduleRetry: scheduler.schedule,
+    });
+
+    try {
+      const listener = vi.fn();
+      lifecycle.subscribe(listener);
+      lifecycle.start(target, 'initial-start');
+
+      expect(() => lifecycle.start(target, 'manual-restart')).not.toThrow();
+
+      expect(scheduler.schedule).toHaveBeenCalledTimes(2);
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+      expect(scheduler.getDisposer(1)).not.toHaveBeenCalled();
+      expect(errorLog).toHaveBeenCalledTimes(1);
+
+      const waitingState = lifecycle.getState();
+      expect(waitingState.status).toBe('waiting');
+      expect(waitingState.reason).toBe('manual-restart');
+      listener.mockClear();
+
+      // 新しい待機中に、解除できなかった旧 callback だけを発火する。
+      expect(() => scheduler.fire(0)).not.toThrow();
+
+      expect(lifecycle.getState()).toEqual(waitingState);
+      expect(listener).not.toHaveBeenCalled();
+      expect(scheduler.schedule).toHaveBeenCalledTimes(2);
+      expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+      expect(scheduler.getDisposer(1)).not.toHaveBeenCalled();
+      expect(errorLog).toHaveBeenCalledTimes(1);
+
+      // 旧 callback を遮断しても、現在の retry は readiness を処理できる。
+      mockTextTrackLength(target.videoEl, 1);
+
+      expect(() => scheduler.fire(1)).not.toThrow();
+
+      expect(lifecycle.getState().status).toBe('running');
+      expect(lifecycle.getState().reason).toBe('manual-restart');
+      expect(lifecycle.getState().target).toBe(target);
+      expect(scheduler.schedule).toHaveBeenCalledTimes(2);
+      expect(scheduler.getDisposer(1)).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'running',
+          reason: 'manual-restart',
+        }),
+      );
       expect(errorLog).toHaveBeenCalledTimes(2);
     } finally {
       try {

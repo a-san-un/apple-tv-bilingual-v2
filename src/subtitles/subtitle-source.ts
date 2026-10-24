@@ -3,6 +3,7 @@
  *
  * readiness 通過後の video に採用 track を bind し、cuechange 通知と snapshot を提供する。
  * cue listener は bind 単位の DisposeBag で所有し、再 bind / unbind / dispose で解除する。
+ * 解除に失敗して旧 listener が残っても、現在の binding 以外からは通知しない。
  * 管理情報は入出力時にコピーし、実際の TextTrack 参照だけを共有する。
  * 待機・retry、track 選定、mode 変更、panel / UI 更新は担当しない。
  * 購読・cue 読取・listener 登録解除の失敗はログに記録する。
@@ -89,13 +90,14 @@ export const createSubtitleSource = (
   const listeners = new Set<SubtitleSourceListener>();
 
   let pair: ResolvedTrackPair = EMPTY_PAIR;
-  // 現在の bind にぶら下がる listener だけを持つ bag。unbind / 再 bind で張り替える。
+  // listener の所有と、通知を許可する現在の binding の識別を兼ねる。
   let bindingBag: DisposeBag | null = null;
   let disposed = false;
 
   /**
    * 購読者へ変化を通知する。
    * 1 つの購読者が例外を投げても、他の購読者と source 自体は止めない。
+   * 通知中に dispose された場合は、その時点で後続の通知を止める。
    *
    * @param change 通知内容。
    */
@@ -105,6 +107,11 @@ export const createSubtitleSource = (
     }
 
     for (const listener of [...listeners]) {
+      // 購読者の callback 内で dispose される場合も、後続購読者を呼ばない。
+      if (disposed) {
+        return;
+      }
+
       try {
         listener(change);
       } catch (error) {
@@ -125,6 +132,7 @@ export const createSubtitleSource = (
 
   /**
    * 1 つの track に cuechange listener を付け、解除関数を bag に登録する。
+   * 登録時の bag が現在の binding と一致する間だけ、通知を許可する。
    *
    * @param bag 現在の bind 用 bag。解除はこの bag の dispose で行う。
    * @param role 通知に載せる役割。
@@ -137,8 +145,15 @@ export const createSubtitleSource = (
   ): void => {
     const { track } = resolved;
 
-    /** cuechange を受けて、中身を持たない変化通知へ変換する。 */
+    /**
+     * 現在の binding の cuechange だけを変化通知へ変換する。
+     * 解除失敗で残った旧 listener や、登録完了前の listener からは通知しない。
+     */
     const handleCueChange = (): void => {
+      if (disposed || bindingBag !== bag) {
+        return;
+      }
+
       notify({ type: 'cuechange', role });
     };
 
@@ -158,6 +173,7 @@ export const createSubtitleSource = (
 
   /**
    * 現在の bind を切り離し、listener の解除を試す。
+   * 解除前に binding を無効化し、解除失敗で残った listener からの通知を防ぐ。
    * 解除失敗はログに記録し、例外を外へ漏らさない。通知は呼び出し側が担当する。
    *
    * @returns 解除前に bind していたら true。実際の解除が全件成功したことは表さない。
@@ -168,6 +184,7 @@ export const createSubtitleSource = (
     }
 
     const bag = bindingBag;
+    // 実際の解除に失敗しても、旧 bag の listener は通知できない状態にする。
     bindingBag = null;
     pair = EMPTY_PAIR;
 
@@ -201,7 +218,7 @@ export const createSubtitleSource = (
       return;
     }
 
-    // 旧 binding を先に切り離して解除を試し、新しい listener を登録する。
+    // 旧 binding を先に無効化して解除を試し、新しい listener を登録する。
     const hadBinding = releaseBinding();
 
     const primary =
@@ -235,6 +252,7 @@ export const createSubtitleSource = (
         attachCueListener(bag, 'secondary', secondary);
       }
     } catch (error) {
+      // この bag は現在の binding にしていないため、解除失敗で残っても通知しない。
       // 登録済み listener の解除をすべて試し、解除失敗も bind の外へ漏らさない。
       try {
         bag.dispose();
@@ -249,6 +267,7 @@ export const createSubtitleSource = (
       return;
     }
 
+    // 両役割の登録が完了してから、この bag の listener に通知を許可する。
     bindingBag = bag;
     pair = { primary, secondary };
     logger.info('subtitle source bound', {
@@ -260,7 +279,8 @@ export const createSubtitleSource = (
 
   /**
    * 現在の bind を解除し、購読者へ unbound を通知する。未 bind なら何もしない。
-   * listener 解除に失敗しても、管理上は未 bind とし、失敗をログに残す。
+   * listener 解除に失敗しても、管理上は未 bind とし、旧 binding の通知を止める。
+   * 実際の解除失敗はログに残す。
    */
   const unbind = (): void => {
     if (disposed) {
@@ -345,6 +365,7 @@ export const createSubtitleSource = (
   /**
    * listener の解除を試し、購読者を破棄する。2 回目以降は何もしない。
    * 解除失敗はログに記録し、stop 済み session に通知しないよう unbound は送らない。
+   * 通知中に呼ばれた場合も、後続購読者への通知を止める。
    */
   const dispose = (): void => {
     if (disposed) {

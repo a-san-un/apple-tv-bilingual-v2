@@ -589,4 +589,172 @@ describe('createSubtitleSource', () => {
     expect(listener).not.toHaveBeenCalled();
     expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
   });
+
+  // S1: 実際の解除に失敗しても、旧 binding からの通知は無効化する。
+  it('解除に失敗した旧 listener は unbind 後に通知しない', () => {
+    const { en, pair, source } = createFixture();
+    const listener = vi.fn();
+
+    try {
+      source.subscribe(listener);
+      source.bind(pair);
+
+      en.removeEventListener.mockImplementation(() => {
+        throw new Error('secondary cleanup failed');
+      });
+
+      expect(() => source.unbind()).not.toThrow();
+
+      // listener 自体は残るため、通知の無効化を独立して確認する。
+      expect(en.listenerCount()).toBe(1);
+      expect(listener.mock.calls).toEqual([
+        [{ type: 'bound' }],
+        [{ type: 'unbound' }],
+      ]);
+      expect(source.getSnapshot().pair).toEqual({
+        primary: null,
+        secondary: null,
+      });
+      listener.mockClear();
+
+      expect(() => en.fireCueChange()).not.toThrow();
+
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      source.dispose();
+    }
+  });
+
+  // S2: 新 binding に含まれない旧 track のイベントを遮断する。
+  it('別 pair への再 bind 後は解除に失敗した旧 track から通知しない', () => {
+    const { ja, en, ko, video, pair, source } = createFixture();
+    const listener = vi.fn();
+    const nextPair = resolveTrackPair({
+      textTracks: video.textTracks,
+      primaryLang: 'ko',
+      secondaryLang: 'en',
+    });
+
+    try {
+      source.subscribe(listener);
+      source.bind(pair);
+
+      ja.removeEventListener.mockImplementation(() => {
+        throw new Error('old primary cleanup failed');
+      });
+
+      expect(() => source.bind(nextPair)).not.toThrow();
+
+      expect(ja.listenerCount()).toBe(1);
+      expect(ko.listenerCount()).toBe(1);
+      expect(en.listenerCount()).toBe(1);
+      expect(source.getSnapshot().pair).toEqual(nextPair);
+      listener.mockClear();
+
+      expect(() => ja.fireCueChange()).not.toThrow();
+
+      expect(listener).not.toHaveBeenCalled();
+
+      // 旧イベントを遮断しても、新 binding の両役割は通知を継続する。
+      ko.fireCueChange();
+      en.fireCueChange();
+
+      expect(listener.mock.calls).toEqual([
+        [{ type: 'cuechange', role: 'primary' }],
+        [{ type: 'cuechange', role: 'secondary' }],
+      ]);
+    } finally {
+      source.dispose();
+    }
+  });
+
+  // S3: 同じ track の旧 listener が残っても、新 binding の通知だけを通す。
+  it('同じ track を含む再 bind 後に旧 listener が残っても通知を重複させない', () => {
+    const { ja, en, video, pair, source } = createFixture();
+    const listener = vi.fn();
+    const nextPair = resolveTrackPair({
+      textTracks: video.textTracks,
+      primaryLang: 'en',
+      secondaryLang: 'ja',
+    });
+
+    try {
+      source.subscribe(listener);
+      source.bind(pair);
+
+      en.removeEventListener.mockImplementation(() => {
+        throw new Error('old secondary cleanup failed');
+      });
+
+      // en の役割を secondary から primary へ変え、旧通知との区別も確認する。
+      expect(() => source.bind(nextPair)).not.toThrow();
+
+      expect(en.addEventListener).toHaveBeenCalledTimes(2);
+      expect(en.listenerCount()).toBe(2);
+      expect(ja.listenerCount()).toBe(1);
+      expect(source.getSnapshot().pair).toEqual(nextPair);
+      listener.mockClear();
+
+      expect(() => en.fireCueChange()).not.toThrow();
+
+      // 残った secondary listener ではなく、現在の primary として一度だけ通知する。
+      expect(listener.mock.calls).toEqual([
+        [{ type: 'cuechange', role: 'primary' }],
+      ]);
+
+      listener.mockClear();
+      ja.fireCueChange();
+
+      expect(listener.mock.calls).toEqual([
+        [{ type: 'cuechange', role: 'secondary' }],
+      ]);
+    } finally {
+      source.dispose();
+    }
+  });
+
+  // S4: 通知開始後でも dispose された時点で、後続購読者への通知を止める。
+  it('購読者が通知中に dispose したら後続の購読者を呼ばない', () => {
+    const { ja, en, pair, source } = createFixture();
+    const firstListener = vi.fn((change: SubtitleSourceChange) => {
+      if (change.type === 'cuechange') {
+        source.dispose();
+      }
+    });
+    const laterListener = vi.fn();
+
+    try {
+      source.subscribe(firstListener);
+      source.subscribe(laterListener);
+      source.bind(pair);
+
+      // bound の通知では破棄せず、cuechange の通知途中で dispose する。
+      expect(firstListener).toHaveBeenCalledWith({ type: 'bound' });
+      expect(laterListener).toHaveBeenCalledWith({ type: 'bound' });
+      firstListener.mockClear();
+      laterListener.mockClear();
+
+      expect(() => ja.fireCueChange()).not.toThrow();
+
+      expect(firstListener.mock.calls).toEqual([
+        [{ type: 'cuechange', role: 'primary' }],
+      ]);
+      expect(laterListener).not.toHaveBeenCalled();
+      expect(ja.listenerCount()).toBe(0);
+      expect(en.listenerCount()).toBe(0);
+      expect(source.getSnapshot()).toEqual({
+        pair: { primary: null, secondary: null },
+        primaryCues: [],
+        secondaryCues: [],
+      });
+
+      firstListener.mockClear();
+      en.fireCueChange();
+
+      expect(firstListener).not.toHaveBeenCalled();
+      expect(laterListener).not.toHaveBeenCalled();
+    } finally {
+      source.dispose();
+    }
+  });
 });

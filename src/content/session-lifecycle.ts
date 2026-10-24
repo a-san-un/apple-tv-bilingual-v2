@@ -3,6 +3,7 @@
  *
  * playback session の開始停止、readiness 待機、retry、video 差し替え検知を所有する。
  * 待機資源は bag 単位で解除し、解除失敗は記録して停止・再開始を継続する。
+ * 解除に失敗して旧 retry が残っても、現在の待機以外からは状態を更新しない。
  * subtitle source / track resolver / panel renderer の起動はまだ行わない。
  */
 import { createDisposeBag, type DisposeBag } from '../shared/dispose';
@@ -156,12 +157,14 @@ const scheduleTimeoutRetry = (
 
 /**
  * readiness 待機だけにぶら下がる監視資源を張り替える holder を作る。
- * 解除に失敗しても参照を切り離し、session の停止や次の待機を妨げない。
+ * 解除前に参照を切り離し、残った旧 callback が現在の待機として動くことを防ぐ。
+ * 解除失敗は記録し、session の停止や次の待機を妨げない。
  *
- * @returns 旧待機の解除を試し、失敗はログに残す disposer holder。
+ * @returns 待機 bag の保持、同一性確認、cleanup を行う holder。
  */
 const createWaitingBagHolder = (): {
   replace(nextBag: DisposeBag | null): void;
+  isCurrent(bag: DisposeBag): boolean;
   dispose(): void;
 } => {
   let current: DisposeBag | null = null;
@@ -172,6 +175,7 @@ const createWaitingBagHolder = (): {
    */
   const releaseCurrent = (): void => {
     const bag = current;
+    // 実際の解除に失敗しても、旧 callback の同一性確認はここから false になる。
     current = null;
 
     if (bag === null) {
@@ -190,7 +194,7 @@ const createWaitingBagHolder = (): {
 
   return {
     /**
-     * 旧待機の解除を試して、新しい待機 bag を保持する。
+     * 旧待機を無効化して解除を試し、新しい待機 bag を保持する。
      *
      * @param nextBag 次に保持する bag。null なら待機なしにする。
      */
@@ -199,7 +203,17 @@ const createWaitingBagHolder = (): {
       current = nextBag;
     },
 
-    /** 現在の待機 bag を切り離し、cleanup を試す。 */
+    /**
+     * 指定した bag が、現在の待機を所有しているかを確認する。
+     *
+     * @param bag retry callback の登録元となる待機 bag。
+     * @returns 現在保持している bag と同じ参照なら true。
+     */
+    isCurrent(bag: DisposeBag): boolean {
+      return current === bag;
+    },
+
+    /** 現在の待機を無効化して bag を切り離し、cleanup を試す。 */
     dispose(): void {
       releaseCurrent();
     },
@@ -275,6 +289,7 @@ export const createSessionLifecycle = (
 
   /**
    * waiting bag を current target 用に張り替える。
+   * retry は登録元の bag が現在の待機である間だけ実行する。
    *
    * @param target 現在監視する playback target。
    * @param reason waiting に入った理由。
@@ -288,7 +303,7 @@ export const createSessionLifecycle = (
     startedAt: number,
   ): void => {
     const waitingBag = createDisposeBag();
-    // 旧 waiting の解除を試して切り離し、次の retry は新しい bag だけで所有する。
+    // 旧 waiting を先に無効化して解除を試し、次の retry は新しい bag だけで所有する。
     waitingBagHolder.replace(waitingBag);
 
     const waitingState: WaitingState = {
@@ -299,8 +314,14 @@ export const createSessionLifecycle = (
 
     setState(createWaitingState(target, waitingState, reason));
 
+    // 状態通知中に stop / start / dispose された場合は、旧待機へ retry を登録しない。
+    if (disposed || !waitingBagHolder.isCurrent(waitingBag)) {
+      return;
+    }
+
     const retryDispose = scheduleRetry(() => {
-      if (disposed) {
+      // 解除失敗で残った旧 callback が、停止状態や新しい待機を変更することを防ぐ。
+      if (disposed || !waitingBagHolder.isCurrent(waitingBag)) {
         return;
       }
 
@@ -317,7 +338,7 @@ export const createSessionLifecycle = (
       }
 
       if (isSubtitleReady(latestTarget)) {
-        // ready 到達後は waiting 用資源の解除を試し、running へ移る。
+        // ready 到達後は旧 callback を無効化し、待機資源の解除を試して running へ移る。
         waitingBagHolder.dispose();
         setState(createRunningState(latestTarget, reason));
         return;
@@ -343,7 +364,7 @@ export const createSessionLifecycle = (
       return;
     }
 
-    // 旧 waiting の参照を切り離して解除を試し、次の開始処理へ進む。
+    // 旧 callback を無効化して解除を試し、次の開始処理へ進む。
     waitingBagHolder.dispose();
 
     if (!target) {
@@ -371,7 +392,7 @@ export const createSessionLifecycle = (
 
   /**
    * 現在の waiting / running session を停止する。
-   * 待機 cleanup の失敗は記録し、stopped への更新を継続する。
+   * 待機 callback は先に無効化し、cleanup の失敗は記録して stopped への更新を継続する。
    * stop は複数回呼ばれても cleanup を 1 回だけにする。
    */
   const stop = (): void => {
