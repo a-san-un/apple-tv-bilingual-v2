@@ -16,7 +16,8 @@
 - Apple TV+ 実画面、`video.textTracks`、SPA 遷移、native subtitle UI、実 DOM 注入、実レイアウトだけを手動スモークテストに残す。
 - 手動確認は少数の固定手順にし、設定反映、字幕表示、シーク後復帰、SPA 遷移、cleanup を重点確認する。
 - debug log または health snapshot を用意し、現在の設定、採用 track、current subtitle、session 状態、layout 状態、UI state を短時間で確認できるようにする。
-- 実装フェーズごとに必要なテストを追加し、最後にまとめて追加する運用にしない。
+- 機能の追加・変更に合わせてテストを追加し、最後にまとめて追加する運用にしない。
+- テストの実施順と作業単位は `docs/implementation-workflow.md` を参照する。
 
 ## 自動テストの構成
 
@@ -95,14 +96,17 @@ npm run test
 ### Small integration test
 
 目的:
-- module 単体ではなく、設定値から resolver、block builder、history、ui state までの接続が最小構成で成立するかを確認する。
+- module 間の入力・出力の受け渡しと、接続単位の生成・破棄が最小構成で成立するかを確認する。
 
 優先対象:
-- `settings-store.ts` と設定値正規化
-- `text-track-resolver.ts` と候補選定
+- settings store の取得結果から resolver への設定値の受け渡し
+- resolver の採用結果から source への track の受け渡し
+- subtitle-session による resolver / source の接続と cleanup
+- session lifecycle による readiness 通過後の字幕接続の生成と、停止・再開始・破棄時の cleanup
 - `subtitle-block-builder.ts` と `SubtitleBlock[]` 構築
+- block builder / history / renderer 間のデータの受け渡し
 - `subtitle-history.ts` と current / past / future 導出
-- `ui-state.ts` と購読通知
+- controls / renderer と `ui-state.ts` の購読通知
 - 必要最小限の layout 計算入力と UI state 反映
 
 実施タイミング:
@@ -140,6 +144,9 @@ npm run test
 
 ## 実行前提
 
+- 確認する機能と接続範囲を明確にする。字幕取得だけの確認に panel の表示結果を合否条件として加えない。
+- 自動テスト、実機確認、未観測、対象外を区別する。自動テストの成功だけで実機確認済みとは扱わない。
+- 必要な条件を再現できなかった項目は、成功ではなく未観測として扱う。
 - `primaryLang` と `secondaryLang` の候補値を明確にしてから実施する。
 - Apple TV+ の再生ページで video が再生可能な状態にしておく。
 - ネイティブ字幕 UI で、少なくとも primary 候補と secondary 候補が存在するコンテンツを使う。
@@ -215,6 +222,19 @@ npm run test
 
 設定としての同一言語の保存拒否と読込補正は「popup 設定の確認項目」、
 listener 解除失敗時の確認は「cleanup、二重 listener、二重描画、DOM 残留の確認項目」を参照する。
+
+字幕取得単体の手動確認:
+- readiness 通過後の current video から、設定に対応する track を取得・採用できること。
+- resolver の採用結果と、source が実際に bind した track を区別して確認できること。
+- bind 直後の snapshot と、再生中の role 付き cuechange 通知を確認できること。
+- primary / secondary の cue 件数を、それぞれ確認できること。
+- secondary 未選択時は、browser language と fallback の採用結果を確認できること。
+- 採用候補がない場合と、採用済み track の cue が空の場合を区別できること。
+
+期待結果:
+- panel や renderer がなくても、採用結果・bind・cue 取得をログまたは snapshot で確認できる。
+- readiness 通過や session の running 表示だけで、track 採用・bind・cue 取得の成功を判定しない。
+- cue 件数が 0 の場合は、track の mode、cue 読込状態、読取失敗の有無を確認し、取得成功と即断しない。
 
 手動スモークで確認する項目:
 1. primary / secondary に別言語を設定する。
@@ -364,7 +384,16 @@ small integration test で確認する項目:
 対象ファイル:
 - `src/content/playback-root.ts`
 - `src/content/session-lifecycle.ts`
+- `src/subtitles/subtitle-session.ts`
 - `src/subtitles/subtitle-source.ts`
+
+自動テストで確認する項目:
+- textTracks が 0 件の間は waiting とし、字幕接続を生成しないこと。
+- readiness 通過後に、対象 video に対する字幕接続を生成すること。
+- waiting 中の video 差し替えで、旧待機を停止し、新 video を対象にすること。
+- stop / dispose 後に、旧 retry が字幕接続を生成しないこと。
+- 再開始後に旧 retry が実行されても、新しい待機や字幕接続へ干渉しないこと。
+- source 自身は readiness 待機・retry を行わないこと。
 
 手動スモークで確認する項目:
 - [ ] video を検出しても `video.textTracks.length === 0` の間、subtitle source が開始されない。
@@ -563,6 +592,10 @@ small integration test で確認する項目:
 - source の一方の listener 解除が失敗しても、他方の解除を試し、失敗をログに残すこと。
 - listener 登録失敗後の cleanup も失敗した場合、source の bind から例外を漏らさないこと。
 - source の dispose 後は購読者へ通知しないこと。
+- listener の解除に失敗した旧 binding から、再 bind 後の購読者へ通知しないこと。
+- 通知途中に dispose された場合、後続購読者へ通知しないこと。
+- subtitle-session の初期化途中で失敗した場合も、作成済み資源の cleanup を試すこと。
+- lifecycle の停止・再開始・直接 dispose で、保持する旧字幕接続の cleanup を一度だけ試すこと。
 - 待機 retry の解除が失敗しても、lifecycle の停止・再開始・直接 dispose の後処理が進むこと。
 - unbind / unmount / unsubscribe が二重呼び出しに耐えること。
 
@@ -596,6 +629,10 @@ small integration test で確認する項目:
 変更のたびに最低限見る項目:
 - popup 設定の保存と再読込が壊れていない。
 - 起動時に OFF 開始である。
+- 設定が incomplete / error の場合、字幕接続を開始しない。
+- 同一 target の再評価だけで、不要な session 再開始や字幕接続の再生成が起きない。
+- debug UI 自身の DOM 更新で、再評価と再開始を繰り返さない。
+- 起動途中の失敗や pagehide で、登録済みの購読、observer、timer、debug UI、lifecycle の cleanup を試す。
 - ON/OFF toggle が panel 開閉と混同されていない。
 - panel 開閉ボタンが拡張全体の状態を変えない。
 - primary / secondary の採用が壊れていない。
@@ -718,149 +755,17 @@ small integration test で確認する項目:
 - DOM 構造、実再生状態、ネイティブ UI、レイアウト見た目に依存するものだけを手動に残す。
 - 手動項目を増やす前に、pure function 化または small integration 化できないかを先に検討する。
 
-## 実装フェーズごとのテスト追加方針
-
-フェーズ番号は `docs/implementation-workflow.md` の Phase に合わせる。
-
-### Phase 0: 実装準備
-
-対象:
-- `package.json`
-- `tsconfig.json`
-- `vitest.config.ts`
-- `eslint.config.js`
-
-追加するテスト:
-- build、typecheck、lint、test が空実行で通ること
-
-### Phase 1: 共通型、dispose helper、設定保存
-
-対象:
-- `src/shared/types.ts`
-- `src/shared/dispose.ts`
-- `src/settings/settings-store.ts`
-
-追加するテスト:
-- typecheck
-- settings の unit test
-- disposer の unit test
-
-### Phase 2: popup UI と設定反映
-
-対象:
-- `src/popup/index.ts`
-- `src/settings/settings-store.ts`
-
-追加するテスト:
-- `settings-store.ts` の unit test 更新
-- popup 設定の最小手動確認
-
-### Phase 3: UI state、playback root、session lifecycle の土台
-
-対象:
-- `src/ui/ui-state.ts`
-- `src/content/playback-root.ts`
-- `src/content/session-lifecycle.ts`
-
-追加するテスト:
-- `ui-state.ts` の unit test
-- session 開始停止まわりの small integration test
-- `textTracks` readiness の手動スモーク
-
-### Phase 4: subtitle source と text-track resolver
-
-対象:
-- `src/subtitles/text-track-resolver.ts`
-- `src/subtitles/subtitle-source.ts`
-- `src/shared/dispose.ts`
-- `src/content/session-lifecycle.ts`
-- 設定境界の回帰確認として `src/settings/settings-store.ts`
-
-追加・更新するテスト:
-- resolver の正規化・候補選定・表示中判定・fallback の unit test
-- resolver の採用結果を source へ渡す small integration test
-- source の listener 所有・通知・コピー保護・エラー境界の test
-- dispose helper と source / lifecycle の cleanup 失敗時の test
-- 同一言語の保存拒否・書込防止・読込補正の settings test
-- settings と resolver を接続した時点で、その受け渡しの small integration test
-
-手動確認:
-- 最小接続後、readiness 通過後の current video から track を取得・採用できることを確認する。
-- source の bind、cue 取得、停止時の解除をログ等で確認する。
-- panel 未実装の段階では、panel の表示結果を合否条件にしない。
-- native menu 同期や history / renderer の確認は、それぞれの接続後に行う。
-
-module の自動テスト成功と、Apple TV+ 実画面での確認を区別して記録する。
-source / resolver が再生経路へ未接続の場合、実機確認済みとは扱わない。
-
-詳細な確認項目は「primary / secondary 字幕の確認項目」と
-「cleanup、二重 listener、二重描画、DOM 残留の確認項目」を参照する。
-
-### Phase 5: SubtitleBlock[] と history
-
-対象:
-- `src/subtitles/subtitle-block-builder.ts`
-- `src/subtitles/subtitle-history.ts`
-
-追加するテスト:
-- block builder の unit test
-- history の unit test
-
-### Phase 6: panel host と panel renderer
-
-対象:
-- `src/panel/panel-host.ts`
-- `src/panel/panel-renderer.ts`
-
-追加するテスト:
-- block / history / renderer 接続の small integration test
-- panel 表示の手動スモーク
-
-### Phase 7: ON/OFF toggle、開閉ボタン、layout 適用
-
-対象:
-- `src/controls/on-off-toggle.ts`
-- `src/controls/panel-open-close-button.ts`
-- `src/layout/player-layout.ts`
-
-追加するテスト:
-- layout の unit test または small integration test
-- controls と ui-state の small integration test
-- ON/OFF と panel 開閉の手動スモーク
-- 7:3 layout の手動スモーク
-
-### Phase 8: restart、cleanup、SPA 遷移
-
-対象:
-- `src/content/session-lifecycle.ts`
-- 関連する subtitles / panel / layout / controls module
-
-追加するテスト:
-- cleanup の unit test
-- seek の手動スモーク
-- video replacement、SPA 遷移、再初期化、cleanup の手動スモーク
-
-### Phase 9: native menu 同期
-
-対象:
-- `src/subtitles/native-menu-sync.ts`
-- `src/subtitles/text-track-resolver.ts`
-
-追加するテスト:
-- native subtitle menu 同期の手動スモーク
-
-### Phase 10: テスト、自動化、スモーク、不具合修正
-
-追加するテスト:
-- 回帰確認項目の一式実施
-- 手動スモークテスト最小セットの実施
 
 
 ## 手動スモークテスト最小セット
 
 実施タイミング:
-- 各フェーズの最後
+- 確認対象の機能を接続した後
+- 関連機能を変更した後の回帰確認時
 - リリース前
+
+部分的な接続確認では、対象機能に対応する手順を実施する。
+最小セット全体の成功は、すべての手順を実施した場合にだけ判定する。
 
 手順 1:
 - popup で `primaryLang` と `secondaryLang` を設定する。

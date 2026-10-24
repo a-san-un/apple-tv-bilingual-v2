@@ -246,7 +246,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 1. TypeScript 基盤、共通型、dispose helper、設定保存
 2. popup UI と設定反映
 3. `ui/ui-state.ts`、`content/playback-root.ts`、`content/session-lifecycle.ts` の土台
-4. `subtitles/subtitle-source.ts`、`subtitles/text-track-resolver.ts`
+4. `subtitles/text-track-resolver.ts`、`subtitles/subtitle-source.ts`、両者を接続する `subtitles/subtitle-session.ts`
 5. `subtitles/subtitle-block-builder.ts`、`subtitles/subtitle-history.ts`
 6. `panel/panel-host.ts`、`panel/panel-renderer.ts`
 7. `controls/on-off-toggle.ts`、`controls/panel-open-close-button.ts`、`layout/player-layout.ts`
@@ -271,7 +271,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 | Phase 1 | TypeScript 基盤、共通型、dispose helper、設定保存を固める | `shared/`、`settings/`、ビルド設定 |
 | Phase 2 | popup UI と設定反映を通す | `popup/`、`settings/` |
 | Phase 3 | runtime UI state と playback/session/readiness の土台を作る | `ui/`、`content/`、`shared/` |
-| Phase 4 | readiness 通過後の subtitle source と track resolver を作る | `subtitles/` |
+| Phase 4 | readiness 通過後の字幕取得基盤と、再生経路への最小接続を作る | `subtitles/`、`content/`、関連テスト |
 | Phase 5 | `SubtitleBlock[]` と history 導出を作る | `subtitles/` |
 | Phase 6 | panel host と panel renderer を導入する | `panel/` |
 | Phase 7 | ON/OFF toggle、開閉ボタン、7:3 layout を導入する | `controls/`、`layout/` |
@@ -728,48 +728,166 @@ const isSubtitleReady = (video: HTMLVideoElement): boolean =>
 ### 目的
 
 - readiness 通過後の current video を前提に、字幕取得窓口を作る
-- `TextTrack` の差異吸収と採用候補判定を、UI と切り離して確立する
+- TextTrack の正規化・採用判定と source の接続を、UI から切り離す
+- renderer なしで採用 track、cue 取得、停止時 cleanup を確認できるようにする
 
 ### 触るファイル
 
-- `src/subtitles/subtitle-source.ts`
+実装:
+
 - `src/subtitles/text-track-resolver.ts`
+- `src/subtitles/subtitle-source.ts`
+- `src/subtitles/subtitle-session.ts`
+- `src/content/session-lifecycle.ts`
+- `src/content/index.ts`
+
+テスト:
+
+- `src/subtitles/text-track-resolver.test.ts`
+- `src/subtitles/subtitle-source.test.ts`
+- `src/subtitles/subtitle-source-snapshot.test.ts`
+- `src/subtitles/subtitle-source-errors.test.ts`
+- `src/subtitles/subtitle-source-test-helpers.ts`
+- `src/subtitles/subtitle-session.test.ts`
+- `src/content/session-lifecycle.test.ts`
+- 必要な回帰確認として settings / shared のテスト
+
+必要な場合だけ変更する共通基盤:
+
 - `src/shared/types.ts`
-- 必要なら `src/shared/log.ts`
+- `src/shared/log.ts`
+- `src/shared/dispose.ts`
+
+責務・owner・公開 API は `docs/minimal-panel-architecture.md` を正本とする。
+テスト項目と手動確認手順は `docs/testing-checklist.md` を参照する。
 
 ### ファイル単位の作業内容
 
 #### `src/subtitles/text-track-resolver.ts`
 
-- `TextTrackList` を `SubtitleTrack[]` 相当に正規化する
-- `language`、`label`、`kind`、`mode` の差異吸収を行う
-- `primaryLang`、`secondaryLang` に対する採用候補判定 API を作る
-- `language` だけで track を採用しない
-- 表示中字幕の最終判定では `TextTrack.mode === "showing"` を優先する
-- `activeCueCount` を表示中字幕の単独判定には使わない
+- TextTrackList 相当の一覧を候補情報へ正規化する
+- language、label、kind、mode を使って採用候補を判定する
+- primary / secondary の採用と fallback を判定する
+- 同じ TextTrack を両方の役割に採用しない
+- 表示中字幕は mode === 'showing' を基準にする
+- active cue の有無だけでは表示中字幕を判断しない
+- browser language の取得、待機、listener 登録、mode 変更は行わない
 
 #### `src/subtitles/subtitle-source.ts`
 
-- readiness を通過した current video に対してのみ bind / unbind を提供する
-- `video.textTracks.length === 0` の待機は担当しない
-- primary / secondary track の listener 所有をここに閉じ込める
-- cue の変化を外へ通知するが、panel 描画や UI state は担当しない
-- 失敗時に session 全体を壊しにくいエラー境界を置く
+- current video に属する採用 track を bind する
+- track binding と cue listener を所有する
+- role 付き cuechange 通知と snapshot 取得を提供する
+- bind 入力と snapshot の管理情報をコピーし、実 TextTrack の参照は共有する
+- 解除に失敗した旧 binding からの通知を遮断する
+- 通知途中に dispose された場合も、後続購読者への通知を止める
+- readiness 待機、retry、track 選定、panel、UI state は扱わない
+
+#### `src/subtitles/subtitle-session.ts`
+
+- resolver と source の接続処理をまとめる
+- source を生成し、購読してから bind する
+- 採用結果と cue 件数をログで観測する
+- lifecycle が保持・実行する Disposable を返す
+- 初期化途中の失敗でも、作成済み資源の cleanup を試す
+- source の内部処理や listener の直接解除を重複実装しない
+
+#### `src/content/session-lifecycle.ts`
+
+- readiness 待機と retry の owner を維持する
+- 字幕入力がある場合だけ、ready 到達後に字幕接続を生成する
+- stop、再開始、dispose で旧字幕接続の cleanup を試す
+- 解除失敗で残った旧 retry が、停止状態や新しい待機を変更しないようにする
+- 字幕接続の詳細は subtitle-session に委譲する
+- running を、両言語の採用や cue 取得成功と同一視しない
+
+#### `src/content/index.ts`
+
+- ready な保存設定を lifecycle へ渡す
+- secondary 未選択時だけ navigator.language を fallback 候補として渡す
+- settings の ready を、通常起動で自動 ON にする条件にしない
+- observer 由来の同一 target 再評価では、不要な start を省く
+- debug badge の同じ表示文字列は再設定しない
+- top-level の購読、observer、debounce timer、badge、lifecycle を cleanup する
+
+target 発見用 observer と debug badge は、既存の確認経路を維持するための暫定配置とする。
+readiness 待機と retry の実装を index へ移さない。
+この暫定配置を、thin coordinator の責務整理がすべて完了した状態とは扱わない。
+
+### 実装と確認の順序
+
+1. resolver と source の境界を固める
+2. subtitle-session に接続処理をまとめる
+3. lifecycle に字幕接続の生成・破棄を接続する
+4. index から保存設定と fallback を渡す
+5. 関連自動テストと build を通す
+6. 正本文書と実装の配置・API・owner を照合する
+7. entry 固有の回帰確認と Apple TV+ 実機確認を行う
+8. 検証用フラグを戻し、結果と未確認事項を記録する
+
+### テストファイルの分割
+
+- source の基本動作、snapshot のコピー保護、エラー境界を別ファイルに分ける
+- fake track、fixture、logger は source テスト専用 helper で共有する
+- helper はテストや hook を登録しない
+- lifecycle のテストは、readiness と字幕接続の生成・破棄の委譲に集中する
+- 実際の resolver / source の接続は subtitle-session のテストで確認する
+- 分割時は既存テストの移動先を確認し、件数だけで確認内容の維持を判断しない
+- 必要な JSDoc や cleanup の説明を削って、行数を減らさない
+
+### 実機確認用フラグ
+
+正式な ON/OFF UI の接続前は、
+index の DEBUG_PHASE4_SUBTITLES を開発用の起動手段として使う。
+
+- 既定値は false とし、通常起動は OFF / closed を維持する
+- true はローカルの実機確認時にだけ使う
+- true でも保存設定が ready でなければ字幕接続を開始しない
+- フラグを storage に保存しない
+- 正式な ON/OFF toggle の実装・検証完了とは扱わない
+- 実機確認後は false に戻し、再 build と通常起動の確認を行う
+
+build、拡張再読み込み、ページ再読み込みの具体的手順は、
+testing-checklist の Phase 4 を参照する。
+
+### 今回の最小接続に含めないもの
+
+- SubtitleBlock[] と history
+- panel、layout、正式な ON/OFF UI
+- native menu 操作後の自動同期
+- readiness 成立後の track 追加に対する自動再解決
+- popup 保存後の設定自動再読込
+
+対象外の機能は未対応として記録し、仕様上の要件を取り消さない。
+設定を変えた実機確認では、保存後にページを再読み込みしてから観測する。
+
+### 未実装ファイルの扱い
+
+後続 Phase の空ファイルは先置きしない。
+空ファイルを削除しても、architecture にある責務と実装予定は維持する。
+対応 Phase の着手時に必要なファイルを作成する。
 
 ### 完了条件
 
-- source は `textTracks` が 0 件の video を自力で待たない
-- resolver は `language` だけで track を採用しない
-- 表示中 track の優先判定に `TextTrack.mode === "showing"` を使う
-- `activeCueCount` を表示中字幕の単独判定に使わない
-- renderer なしでも採用 track 情報をログや test で確認できる
+- source 自身は textTracks が 0 件の video を待機しない
+- resolver は language だけで track を採用しない
+- 表示中判定に showing を使い、active cue 単独では判断しない
+- lifecycle が字幕接続の寿命を管理し、source が cue listener を管理する
+- renderer なしで採用結果と cue 取得を確認できる
+- 停止・再開始・破棄時に旧字幕接続の cleanup を試す
+- 自動テスト成功、コード上の確認、実機確認を区別して記録する
+- 未観測・未対応・失敗を残したまま、Phase 全体の完了を断定しない
 
 ### 検証タイミング
 
-- 実装直後に typecheck、lint
-- `text-track-resolver.ts` の unit test を優先追加
-- `subtitle-source.ts` は mocked `TextTrack` 相当で small integration test を追加
-- Apple TV+ 実画面では「readiness 通過後の video から track を拾えるか」だけを短く確認する
+- module 実装・分割後に typecheck、lint、関連テスト
+- entry 接続後に typecheck、lint、全テスト、build
+- entry の起動条件、同一 target 再評価、pagehide cleanup を回帰確認する
+- Apple TV+ で track 採用、bind、cue 取得、停止時解除を確認する
+- 検証用フラグを false に戻した状態も確認する
+
+module テストの成功だけで、entry の分岐や実機動作を確認済みと扱わない。
+実行結果と未確認事項は testing-checklist に記録する。
 
 ## Phase 5: `SubtitleBlock[]` と current / past / future 導出
 

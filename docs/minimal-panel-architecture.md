@@ -101,7 +101,7 @@ architecture は、責務境界、依存方向、データフロー、playback s
 - Apple TV+ DOM の selector 一覧や観測ログ
 - track 数の詳細ログ
 - native menu の切替時系列
-- 実装フェーズ順の詳細
+- 実装順と作業手順の詳細
 - 詳細テスト項目
 - seek 後 recovery の細部アルゴリズム
 
@@ -114,7 +114,7 @@ architecture は、責務境界、依存方向、データフロー、playback s
 | 内容 | 正本 |
 | --- | --- |
 | 保存設定、popup、候補言語、fallback、validation | `docs/settings-spec.md` |
-| 実装フェーズ、ファイル単位の作業順、検証タイミング | `docs/implementation-workflow.md` |
+| 実装順、ファイル単位の作業手順、検証タイミング | `docs/implementation-workflow.md` |
 | Apple TV+ 固有の DOM、selector、video / `textTracks` の観測、native menu の実装判断 | `docs/apple-tv-dom-structure.md` |
 | 実機で得た DOM 詳細ログ、時系列、未確認事項 | `docs/apple-tv-dom-observations.md` |
 | テスト観点、自動テスト、手動確認、回帰確認 | `docs/testing-checklist.md` |
@@ -596,9 +596,9 @@ readiness 待機中に video identity が変わった場合は、古い待機を
 
 共通型の定義は §18 の `SubtitleBlock` を参照する。
 
-現行の共通型は、時刻範囲と primary / secondary の表示文字列を持つ。
-id は現行型に含めない。Phase 5 で識別子が必要になった場合は、
-用途と必要性を確認してから共通型と本節を同時に更新する。
+`SubtitleBlock` は、時刻範囲と primary / secondary の表示文字列を持つ。
+識別子は共通型に含めない。
+識別子を追加する場合は、用途と必要性を明確にし、共通型と本節を同時に更新する。
 
 補足ルール:
 
@@ -683,8 +683,8 @@ panel-renderer.ts を初回描画
 
 開始・再初期化理由は §18 の `RestartReason` で共有する。
 
-DOM 上の再初期化契機と、実装済みの理由コードは区別する。
-この節の restart 手順は設計方針であり、すべての検出経路が実装済みであることを意味しない。
+DOM 上で観測した変化と、再初期化に使う理由コードは区別する。
+検出した変化をどの理由コードへ対応づけるかは、session lifecycle の責務として定義する。
 
 新しい理由コードを採用する場合は、検出元、既存コードとの対応、影響するテストを確認し、
 `src/shared/types.ts` と §18 を同時に更新する。
@@ -853,8 +853,9 @@ runtime state のうち、字幕 truth、UI state、layout state は同じ store
 - 複数 module で共有する型の定義は §18 に置く。
 - 各 API 節には公開操作と、その module 固有の入力・出力境界を書く。
 - 保存設定の詳細な型・取得結果・validation は `docs/settings-spec.md` を参照する。
-- 未実装 module の API は設計例として扱い、実装前に現行コードと照合して確定する。
-- ここに API が記載されていても、module 間の接続や実機確認が完了したことは意味しない。
+- API は module 間の入力・出力・所有権・失敗条件を定義する。
+- 設計例と確定した API は区別して記載する。
+- 実装順と接続手順は `docs/implementation-workflow.md`、検証手順と結果は `docs/testing-checklist.md` で扱う。
 
 ### `settings-store.ts`
 
@@ -1022,13 +1023,13 @@ primary / secondary の cue 群から `SubtitleBlock[]` を構築する。
 またはそこから取り出した両言語の cue 配列とする。
 `SubtitleCueSnapshot` は cue 1 件分であり、両言語の配列全体を表す型として使わない。
 
-Phase 5 の実装前に引数の形を確定し、公開 API を本節へ反映する。
+入力の具体的な形は、source と builder の責務境界に基づいて定義し、公開 API を本節に記載する。
 renderer や panel の都合、DOM 操作、source の listener 所有は持ち込まない。
 
 ### `subtitle-history.ts`
 
 ```ts
-// Phase 5 の設計例。共通型は §18 を参照する。
+// API の設計例。共通型は §18 を参照する。
 function deriveSubtitleHistory(
   blocks: SubtitleBlock[],
   currentTime: number,
@@ -1092,7 +1093,7 @@ function mountPanelOpenCloseButton(args: {
 ### `player-layout.ts`
 
 ```ts
-// 後続 Phase の設計例。PlayerLayoutState は §18 を参照する。
+// API の設計例。PlayerLayoutState は §18 を参照する。
 type PlayerLayoutController = {
   apply(open: boolean): void;
   reset(): void;
@@ -1108,7 +1109,7 @@ function createPlayerLayout(args: {
 
 ### `session-lifecycle.ts`
 
-現在の controller は readiness 待機・開始停止・状態購読を提供する。
+controller は readiness 待機・開始停止・状態購読を提供する。
 共通型は §18、cleanup の失敗契約は §19 を参照する。
 
 ```ts
@@ -1143,8 +1144,8 @@ function createSessionLifecycle(
 - getState は state の外側と waiting 情報をコピーし、target と DOM 参照は共有する。
 - dispose 後は新しい開始と購読を受け付けない。
 
-§12〜§13 は session 全体の接続・restart の設計方針を示す。
-現行 controller に記載されていない接続や検出経路が、実装済みであることは意味しない。
+§12〜§13 は session 全体の接続・restart・cleanup の責務と順序を定義する。
+本節は、その制御に用いる controller の公開 API を定義する。
 
 ---
 
