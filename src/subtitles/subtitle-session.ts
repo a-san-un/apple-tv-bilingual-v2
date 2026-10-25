@@ -198,6 +198,35 @@ export const createSubtitleSession = (
     };
 
     /**
+     * source の要約を debug ログへ出力する。
+     * debug 無効時は、ログ専用の文字列や現在時刻を取得しない。
+     * 観測通知や字幕接続の状態更新は担当しない。
+     *
+     * @param summary source から取得済みの採用情報と cue 件数。
+     * @param event ログに記録する通知種別。
+     * @param role cuechange の役割。それ以外は null。
+     */
+    const logSourceSummary = (
+        summary: SubtitleSourceSummary,
+        event: SubtitleSessionObservation['event'],
+        role: SubtitleTrackRole | null,
+    ): void => {
+        if (!(logger.isEnabled?.('debug') ?? true)) {
+            return;
+        }
+
+        logger.debug('subtitle source snapshot', {
+            event,
+            role,
+            primary: summarizeTrack(summary.pair.primary),
+            secondary: summarizeTrack(summary.pair.secondary),
+            primaryCueCount: summary.primaryCueCount,
+            secondaryCueCount: summary.secondaryCueCount,
+            currentTime: videoEl.currentTime,
+        });
+    };
+
+    /**
      * source の変化を既存ログと観測 callback へ渡す。
      * cuechange の後は、未取得の別役割がある場合だけ選定を再評価する。
      *
@@ -225,18 +254,7 @@ export const createSubtitleSession = (
         sourceChangeCount += 1;
         const role = change.type === 'cuechange' ? change.role : null;
 
-        // 出力しないログの要約・補助情報は生成しない。判定 API がなければ従来動作を維持する。
-        if (logger.isEnabled?.('debug') ?? true) {
-            logger.debug('subtitle source snapshot', {
-                event: change.type,
-                role,
-                primary: summarizeTrack(snapshot.pair.primary),
-                secondary: summarizeTrack(snapshot.pair.secondary),
-                primaryCueCount: snapshot.primaryCueCount,
-                secondaryCueCount: snapshot.secondaryCueCount,
-                currentTime: videoEl.currentTime,
-            });
-        }
+        logSourceSummary(snapshot, change.type, role);
 
         publishObservation(snapshot, change.type, role);
 
@@ -447,18 +465,7 @@ export const createSubtitleSession = (
 
             const snapshot = source.getSummary();
 
-            // ログを抑制しても、後続の読込み完了通知は必ず処理する。
-            if (logger.isEnabled?.('debug') ?? true) {
-                logger.debug('subtitle source snapshot', {
-                    event: 'snapshot',
-                    role: null,
-                    primary: summarizeTrack(snapshot.pair.primary),
-                    secondary: summarizeTrack(snapshot.pair.secondary),
-                    primaryCueCount: snapshot.primaryCueCount,
-                    secondaryCueCount: snapshot.secondaryCueCount,
-                    currentTime: videoEl.currentTime,
-                });
-            }
+            logSourceSummary(snapshot, 'snapshot', null);
 
             // 読込み完了は cuechange ではないので、通知回数は加算しない。
             publishObservation(snapshot, 'snapshot', null);

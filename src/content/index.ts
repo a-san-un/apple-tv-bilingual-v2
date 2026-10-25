@@ -29,8 +29,8 @@ const DEBUG_AUTO_ENABLE_SUBTITLES = true;
 /** session 状態を観測する debug badge を表示する。 */
 const DEBUG_SESSION_BADGE = true;
 
-/** DOM 変化による target 再評価をまとめる待機時間。ミリ秒単位。 */
-const SPA_OBSERVER_DEBOUNCE_MS = 120;
+/** DOM 変化をまとめ、target 再評価まで待つ時間。ミリ秒単位。 */
+const TARGET_REFRESH_DELAY_MS = 120;
 
 /**
  * 設定と runtime state を lifecycle へ接続する。
@@ -165,16 +165,19 @@ const bootContentScript = async (): Promise<void> => {
     applyCurrentTarget('spa-navigation');
   };
 
-  /** 有効時だけ target 再評価を予約し、古い予約は置き換える。 */
+  /** 有効時だけ target 再評価を予約し、予約済みなら実行時刻を維持する。 */
   const scheduleTargetRefresh = (): void => {
-    if (disposed || !uiStateStore.getState().extensionEnabled) {
+    if (
+      disposed ||
+      !uiStateStore.getState().extensionEnabled ||
+      observerTimerId !== null
+    ) {
       return;
     }
 
-    clearObserverTimer();
     observerTimerId = window.setTimeout(
       refreshTarget,
-      SPA_OBSERVER_DEBOUNCE_MS,
+      TARGET_REFRESH_DELAY_MS,
     );
   };
 

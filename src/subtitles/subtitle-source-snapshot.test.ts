@@ -13,143 +13,153 @@ import { createFixture } from './subtitle-source-test-helpers';
 describe('createSubtitleSource の snapshot と参照', () => {
     it('snapshot の pair を書き換えても内部の採用結果と listener は変わらない', () => {
         const { ja, en, pair, source } = createFixture();
-        source.bind(pair);
+        try {
+            source.bind(pair);
 
-        const snapshot = source.getSnapshot();
-        snapshot.pair.primary = null;
-        snapshot.pair.secondary = null;
+            const snapshot = source.getSnapshot();
+            snapshot.pair.primary = null;
+            snapshot.pair.secondary = null;
 
-        const nextSnapshot = source.getSnapshot();
-        expect(nextSnapshot.pair).toEqual(pair);
-        expect(ja.listenerCount()).toBe(1);
-        expect(en.listenerCount()).toBe(1);
+            const nextSnapshot = source.getSnapshot();
+            expect(nextSnapshot.pair).toEqual(pair);
+            expect(ja.listenerCount()).toBe(1);
+            expect(en.listenerCount()).toBe(1);
 
-        // snapshot の変更で内部 pair が壊れると、同じ pair でも再登録されてしまう。
-        source.bind(pair);
-        expect(ja.addEventListener).toHaveBeenCalledTimes(1);
-        expect(en.addEventListener).toHaveBeenCalledTimes(1);
-
-        source.dispose();
+            // snapshot の変更で内部 pair が壊れると、同じ pair でも再登録されてしまう。
+            source.bind(pair);
+            expect(ja.addEventListener).toHaveBeenCalledTimes(1);
+            expect(en.addEventListener).toHaveBeenCalledTimes(1);
+        } finally {
+            source.dispose();
+        }
     });
 
     it('snapshot の track 管理情報を書き換えても内部と次の snapshot は変わらない', () => {
         const { pair, source } = createFixture();
-        source.bind(pair);
+        try {
+            source.bind(pair);
 
-        const snapshot = source.getSnapshot();
-        const primary = snapshot.pair.primary;
-        const secondary = snapshot.pair.secondary;
+            const snapshot = source.getSnapshot();
+            const primary = snapshot.pair.primary;
+            const secondary = snapshot.pair.secondary;
 
-        if (primary === null || secondary === null) {
-            throw new Error('fixture must resolve both subtitle tracks');
+            if (primary === null || secondary === null) {
+                throw new Error('fixture must resolve both subtitle tracks');
+            }
+
+            primary.language = 'changed-primary';
+            primary.label = '変更した学習言語';
+            primary.mode = 'disabled';
+            secondary.language = 'changed-secondary';
+            secondary.label = '変更した母国語';
+            secondary.mode = 'disabled';
+
+            const nextSnapshot = source.getSnapshot();
+            expect(nextSnapshot.pair).toEqual(pair);
+            expect(nextSnapshot.pair).not.toBe(snapshot.pair);
+            expect(nextSnapshot.pair.primary).not.toBe(primary);
+            expect(nextSnapshot.pair.secondary).not.toBe(secondary);
+            expect(pair.primary?.language).toBe('ja');
+            expect(pair.secondary?.language).toBe('en');
+        } finally {
+            source.dispose();
         }
-
-        primary.language = 'changed-primary';
-        primary.label = '変更した学習言語';
-        primary.mode = 'disabled';
-        secondary.language = 'changed-secondary';
-        secondary.label = '変更した母国語';
-        secondary.mode = 'disabled';
-
-        const nextSnapshot = source.getSnapshot();
-        expect(nextSnapshot.pair).toEqual(pair);
-        expect(nextSnapshot.pair).not.toBe(snapshot.pair);
-        expect(nextSnapshot.pair.primary).not.toBe(primary);
-        expect(nextSnapshot.pair.secondary).not.toBe(secondary);
-        expect(pair.primary?.language).toBe('ja');
-        expect(pair.secondary?.language).toBe('en');
-
-        source.dispose();
     });
 
     it('snapshot の cue と cue 側の track 情報を書き換えても内部へ伝わらない', () => {
         const { pair, source } = createFixture();
-        source.bind(pair);
+        try {
+            source.bind(pair);
 
-        const snapshot = source.getSnapshot();
-        const primaryCue = snapshot.primaryCues[0];
-        const secondaryCue = snapshot.secondaryCues[0];
+            const snapshot = source.getSnapshot();
+            const primaryCue = snapshot.primaryCues[0];
+            const secondaryCue = snapshot.secondaryCues[0];
 
-        if (
-            primaryCue === undefined ||
-            secondaryCue === undefined ||
-            primaryCue.track === null ||
-            secondaryCue.track === null
-        ) {
-            throw new Error('fixture must provide cues with track information');
+            if (
+                primaryCue === undefined ||
+                secondaryCue === undefined ||
+                primaryCue.track === null ||
+                secondaryCue.track === null
+            ) {
+                throw new Error('fixture must provide cues with track information');
+            }
+
+            // cue 側も内部情報ではなく、その snapshot 用の track 情報を参照する。
+            expect(primaryCue.track).toBe(snapshot.pair.primary);
+            expect(secondaryCue.track).toBe(snapshot.pair.secondary);
+
+            primaryCue.text = '変更した字幕';
+            primaryCue.startTime = 100;
+            primaryCue.endTime = 101;
+            primaryCue.track.label = '変更したprimaryラベル';
+            secondaryCue.track.label = '変更したsecondaryラベル';
+            snapshot.secondaryCues.length = 0;
+
+            const nextSnapshot = source.getSnapshot();
+            expect(nextSnapshot.primaryCues).toEqual([
+                {
+                    startTime: 1,
+                    endTime: 2,
+                    text: 'こんにちは',
+                    track: pair.primary,
+                },
+            ]);
+            expect(nextSnapshot.secondaryCues).toEqual([
+                {
+                    startTime: 1,
+                    endTime: 2,
+                    text: 'Hello',
+                    track: pair.secondary,
+                },
+            ]);
+        } finally {
+            source.dispose();
         }
-
-        // cue 側も内部情報ではなく、その snapshot 用の track 情報を参照する。
-        expect(primaryCue.track).toBe(snapshot.pair.primary);
-        expect(secondaryCue.track).toBe(snapshot.pair.secondary);
-
-        primaryCue.text = '変更した字幕';
-        primaryCue.startTime = 100;
-        primaryCue.endTime = 101;
-        primaryCue.track.label = '変更したprimaryラベル';
-        secondaryCue.track.label = '変更したsecondaryラベル';
-        snapshot.secondaryCues.length = 0;
-
-        const nextSnapshot = source.getSnapshot();
-        expect(nextSnapshot.primaryCues).toEqual([
-            {
-                startTime: 1,
-                endTime: 2,
-                text: 'こんにちは',
-                track: pair.primary,
-            },
-        ]);
-        expect(nextSnapshot.secondaryCues).toEqual([
-            {
-                startTime: 1,
-                endTime: 2,
-                text: 'Hello',
-                track: pair.secondary,
-            },
-        ]);
-
-        source.dispose();
     });
 
     it('bind 元の pair と track 管理情報を書き換えても内部へ伝わらない', () => {
         const { ja, en, ko, pair, source } = createFixture();
-        const primary = pair.primary;
-        const secondary = pair.secondary;
+        try {
+            const primary = pair.primary;
+            const secondary = pair.secondary;
 
-        if (primary === null || secondary === null) {
-            throw new Error('fixture must resolve both subtitle tracks');
+            if (primary === null || secondary === null) {
+                throw new Error('fixture must resolve both subtitle tracks');
+            }
+
+            source.bind(pair);
+
+            // 呼び出し元の変更にかかわらず、source は bind 時の管理情報を維持する。
+            primary.language = 'changed-primary';
+            primary.label = '変更したprimaryラベル';
+            primary.track = ko;
+            secondary.language = 'changed-secondary';
+            secondary.label = '変更したsecondaryラベル';
+            secondary.track = ko;
+            pair.primary = null;
+            pair.secondary = null;
+
+            const snapshot = source.getSnapshot();
+            expect(snapshot.pair.primary).toMatchObject({
+                language: 'ja',
+                label: 'ja',
+                track: ja,
+            });
+            expect(snapshot.pair.secondary).toMatchObject({
+                language: 'en',
+                label: 'en',
+                track: en,
+            });
+            expect(snapshot.primaryCues.map((cue) => cue.text)).toEqual(['こんにちは']);
+            expect(snapshot.secondaryCues.map((cue) => cue.text)).toEqual(['Hello']);
+            expect(ko.addEventListener).not.toHaveBeenCalled();
+
+            source.dispose();
+            expect(ja.listenerCount()).toBe(0);
+            expect(en.listenerCount()).toBe(0);
+        } finally {
+            source.dispose();
         }
-
-        source.bind(pair);
-
-        // 呼び出し元の変更にかかわらず、source は bind 時の管理情報を維持する。
-        primary.language = 'changed-primary';
-        primary.label = '変更したprimaryラベル';
-        primary.track = ko;
-        secondary.language = 'changed-secondary';
-        secondary.label = '変更したsecondaryラベル';
-        secondary.track = ko;
-        pair.primary = null;
-        pair.secondary = null;
-
-        const snapshot = source.getSnapshot();
-        expect(snapshot.pair.primary).toMatchObject({
-            language: 'ja',
-            label: 'ja',
-            track: ja,
-        });
-        expect(snapshot.pair.secondary).toMatchObject({
-            language: 'en',
-            label: 'en',
-            track: en,
-        });
-        expect(snapshot.primaryCues.map((cue) => cue.text)).toEqual(['こんにちは']);
-        expect(snapshot.secondaryCues.map((cue) => cue.text)).toEqual(['Hello']);
-        expect(ko.addEventListener).not.toHaveBeenCalled();
-
-        source.dispose();
-        expect(ja.listenerCount()).toBe(0);
-        expect(en.listenerCount()).toBe(0);
     });
 
     it('未 bind の snapshot を書き換えても自分と別 source の未 bind 状態は変わらない', () => {
@@ -183,42 +193,46 @@ describe('createSubtitleSource の snapshot と参照', () => {
 
     it('管理情報をコピーしても実際の TextTrack は同一で通知と cleanup が機能する', () => {
         const { ja, en, pair, source } = createFixture();
-        const listener = vi.fn();
-        source.subscribe(listener);
-        source.bind(pair);
+        try {
+            const listener = vi.fn();
+            source.subscribe(listener);
+            source.bind(pair);
 
-        const first = source.getSnapshot();
-        const second = source.getSnapshot();
+            const first = source.getSnapshot();
+            const second = source.getSnapshot();
 
-        expect(first.pair.primary).not.toBe(pair.primary);
-        expect(first.pair.secondary).not.toBe(pair.secondary);
-        expect(first.pair.primary).not.toBe(second.pair.primary);
-        expect(first.pair.secondary).not.toBe(second.pair.secondary);
+            expect(first.pair.primary).not.toBe(pair.primary);
+            expect(first.pair.secondary).not.toBe(pair.secondary);
+            expect(first.pair.primary).not.toBe(second.pair.primary);
+            expect(first.pair.secondary).not.toBe(second.pair.secondary);
 
-        // 管理情報はコピーするが、listener の対象となる TextTrack は共有する。
-        expect(first.pair.primary?.track).toBe(ja);
-        expect(first.pair.secondary?.track).toBe(en);
-        expect(second.pair.primary?.track).toBe(ja);
-        expect(second.pair.secondary?.track).toBe(en);
-        expect(first.primaryCues[0]?.track?.track).toBe(ja);
-        expect(first.secondaryCues[0]?.track?.track).toBe(en);
+            // 管理情報はコピーするが、listener の対象となる TextTrack は共有する。
+            expect(first.pair.primary?.track).toBe(ja);
+            expect(first.pair.secondary?.track).toBe(en);
+            expect(second.pair.primary?.track).toBe(ja);
+            expect(second.pair.secondary?.track).toBe(en);
+            expect(first.primaryCues[0]?.track?.track).toBe(ja);
+            expect(first.secondaryCues[0]?.track?.track).toBe(en);
 
-        listener.mockClear();
-        ja.fireCueChange();
-        en.fireCueChange();
+            listener.mockClear();
+            ja.fireCueChange();
+            en.fireCueChange();
 
-        expect(listener.mock.calls).toEqual([
-            [{ type: 'cuechange', role: 'primary' }],
-            [{ type: 'cuechange', role: 'secondary' }],
-        ]);
+            expect(listener.mock.calls).toEqual([
+                [{ type: 'cuechange', role: 'primary' }],
+                [{ type: 'cuechange', role: 'secondary' }],
+            ]);
 
-        source.unbind();
-        source.dispose();
-        source.dispose();
+            source.unbind();
+            source.dispose();
+            source.dispose();
 
-        expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
-        expect(en.removeEventListener).toHaveBeenCalledTimes(1);
-        expect(ja.listenerCount()).toBe(0);
-        expect(en.listenerCount()).toBe(0);
+            expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
+            expect(en.removeEventListener).toHaveBeenCalledTimes(1);
+            expect(ja.listenerCount()).toBe(0);
+            expect(en.listenerCount()).toBe(0);
+        } finally {
+            source.dispose();
+        }
     });
 });

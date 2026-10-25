@@ -972,6 +972,30 @@ describe('subtitle-session の track 一覧の変化', () => {
 });
 
 describe('subtitle-session の一覧変更を伴わない cue 読込み', () => {
+    it('cue が空の間は timeupdate ごとに resolver を呼び直している', () => {
+        const { options, en, ja, video } = createFixture();
+        setTrackCues(en, []);
+
+        const resolve = vi.spyOn(trackResolver, 'resolveTrackPair');
+        const session = createSubtitleSession(options);
+
+        try {
+            resolve.mockClear();
+
+            for (let index = 0; index < 10; index += 1) {
+                video.fire('timeupdate');
+            }
+
+            expect(resolve).toHaveBeenCalledTimes(10);
+            expect(en.addEventListener).toHaveBeenCalledTimes(1);
+            expect(ja.addEventListener).toHaveBeenCalledTimes(1);
+            expect(en.removeEventListener).not.toHaveBeenCalled();
+            expect(ja.removeEventListener).not.toHaveBeenCalled();
+        } finally {
+            session.dispose();
+        }
+    });
+
     it.each(['timeupdate', 'loadeddata', 'playing', 'seeked'])(
         '%s で、後から cue を持った同言語の captions へ切り替える',
         (eventName) => {

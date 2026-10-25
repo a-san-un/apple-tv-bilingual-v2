@@ -15,138 +15,158 @@ import { resolveTrackPair } from './text-track-resolver';
 describe('createSubtitleSource のエラー境界', () => {
     it('購読者の例外は他の購読者と track 側の dispatch を止めない', () => {
         const { ja, pair, logger, source } = createFixture();
-        const failing = vi.fn(() => {
-            throw new Error('listener failed');
-        });
-        const healthy = vi.fn();
-        source.subscribe(failing);
-        source.subscribe(healthy);
-        source.bind(pair);
-        healthy.mockClear();
+        try {
+            const failing = vi.fn(() => {
+                throw new Error('listener failed');
+            });
+            const healthy = vi.fn();
+            source.subscribe(failing);
+            source.subscribe(healthy);
+            source.bind(pair);
+            healthy.mockClear();
 
-        expect(() => ja.fireCueChange()).not.toThrow();
+            expect(() => ja.fireCueChange()).not.toThrow();
 
-        expect(healthy).toHaveBeenCalledWith({
-            type: 'cuechange',
-            role: 'primary',
-        });
-        expect(logger.error).toHaveBeenCalled();
+            expect(healthy).toHaveBeenCalledWith({
+                type: 'cuechange',
+                role: 'primary',
+            });
+            expect(logger.error).toHaveBeenCalled();
+        } finally {
+            source.dispose();
+        }
     });
 
     it('listener 登録の途中で失敗したら、付けた分を外して未 bind に戻す', () => {
         const { ja, en, pair, logger, source } = createFixture();
-        en.addEventListener.mockImplementation(() => {
-            throw new Error('add failed');
-        });
+        try {
+            en.addEventListener.mockImplementation(() => {
+                throw new Error('add failed');
+            });
 
-        expect(() => source.bind(pair)).not.toThrow();
+            expect(() => source.bind(pair)).not.toThrow();
 
-        expect(ja.addEventListener).toHaveBeenCalledTimes(1);
-        expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
-        expect(ja.listenerCount()).toBe(0);
-        expect(source.getSnapshot().pair).toEqual({
-            primary: null,
-            secondary: null,
-        });
-        expect(logger.error).toHaveBeenCalled();
+            expect(ja.addEventListener).toHaveBeenCalledTimes(1);
+            expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
+            expect(ja.listenerCount()).toBe(0);
+            expect(source.getSnapshot().pair).toEqual({
+                primary: null,
+                secondary: null,
+            });
+            expect(logger.error).toHaveBeenCalled();
+        } finally {
+            source.dispose();
+        }
     });
 
     it('cue の読取に失敗しても snapshot は空配列で返す', () => {
         const { ja, pair, logger, source } = createFixture();
-        Object.defineProperty(ja, 'cues', {
-            get() {
-                throw new Error('cues unavailable');
-            },
-        });
-        source.bind(pair);
+        try {
+            Object.defineProperty(ja, 'cues', {
+                get() {
+                    throw new Error('cues unavailable');
+                },
+            });
+            source.bind(pair);
 
-        const snapshot = source.getSnapshot();
+            const snapshot = source.getSnapshot();
 
-        expect(snapshot.primaryCues).toEqual([]);
-        expect(snapshot.secondaryCues.map((cue) => cue.text)).toEqual(['Hello']);
-        expect(logger.error).toHaveBeenCalled();
+            expect(snapshot.primaryCues).toEqual([]);
+            expect(snapshot.secondaryCues.map((cue) => cue.text)).toEqual(['Hello']);
+            expect(logger.error).toHaveBeenCalled();
+        } finally {
+            source.dispose();
+        }
     });
 
     // 解除に失敗した resource の消失は保証せず、残りの解除試行を確認する。
     it('一方の解除が失敗しても他方を解除し、unbind から例外を漏らさない', () => {
         const { ja, en, pair, logger, source } = createFixture();
-        const listener = vi.fn();
-        source.subscribe(listener);
-        source.bind(pair);
-        listener.mockClear();
+        try {
+            const listener = vi.fn();
+            source.subscribe(listener);
+            source.bind(pair);
+            listener.mockClear();
 
-        en.removeEventListener.mockImplementation(() => {
-            throw new Error('secondary cleanup failed');
-        });
+            en.removeEventListener.mockImplementation(() => {
+                throw new Error('secondary cleanup failed');
+            });
 
-        expect(() => source.unbind()).not.toThrow();
+            expect(() => source.unbind()).not.toThrow();
 
-        // 逆順で先に解除する secondary が失敗しても、primary の解除は試す。
-        expect(en.removeEventListener).toHaveBeenCalledTimes(1);
-        expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
-        expect(en.listenerCount()).toBe(1);
-        expect(ja.listenerCount()).toBe(0);
-        expect(logger.error).toHaveBeenCalledWith(
-            'subtitle source unbind failed',
-            { error: expect.any(AggregateError) },
-        );
-        expect(listener.mock.calls).toEqual([[{ type: 'unbound' }]]);
-        expect(source.getSnapshot()).toEqual({
-            pair: { primary: null, secondary: null },
-            primaryCues: [],
-            secondaryCues: [],
-        });
+            // 逆順で先に解除する secondary が失敗しても、primary の解除は試す。
+            expect(en.removeEventListener).toHaveBeenCalledTimes(1);
+            expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
+            expect(en.listenerCount()).toBe(1);
+            expect(ja.listenerCount()).toBe(0);
+            expect(logger.error).toHaveBeenCalledWith(
+                'subtitle source unbind failed',
+                { error: expect.any(AggregateError) },
+            );
+            expect(listener.mock.calls).toEqual([[{ type: 'unbound' }]]);
+            expect(source.getSnapshot()).toEqual({
+                pair: { primary: null, secondary: null },
+                primaryCues: [],
+                secondaryCues: [],
+            });
 
-        listener.mockClear();
+            listener.mockClear();
 
-        expect(() => source.dispose()).not.toThrow();
+            expect(() => source.dispose()).not.toThrow();
 
-        // listener が残っていても、破棄後は購読者へ通知しない。
-        en.fireCueChange();
-        expect(listener).not.toHaveBeenCalled();
-        expect(en.removeEventListener).toHaveBeenCalledTimes(1);
-        expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
+            // listener が残っていても、破棄後は購読者へ通知しない。
+            en.fireCueChange();
+            expect(listener).not.toHaveBeenCalled();
+            expect(en.removeEventListener).toHaveBeenCalledTimes(1);
+            expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
+        } finally {
+            source.dispose();
+        }
     });
 
     it('登録失敗後の解除も失敗した場合に bind から例外を漏らさない', () => {
         const { ja, en, pair, logger, source } = createFixture();
-        const listener = vi.fn();
-        source.subscribe(listener);
+        try {
+            const listener = vi.fn();
+            source.subscribe(listener);
 
-        en.addEventListener.mockImplementation(() => {
-            throw new Error('secondary registration failed');
-        });
-        ja.removeEventListener.mockImplementation(() => {
-            throw new Error('primary rollback failed');
-        });
+            en.addEventListener.mockImplementation(() => {
+                throw new Error('secondary registration failed');
+            });
+            ja.removeEventListener.mockImplementation(() => {
+                throw new Error('primary rollback failed');
+            });
 
-        expect(() => source.bind(pair)).not.toThrow();
+            expect(() => source.bind(pair)).not.toThrow();
 
-        expect(ja.addEventListener).toHaveBeenCalledTimes(1);
-        expect(en.addEventListener).toHaveBeenCalledTimes(1);
-        expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
+            expect(ja.addEventListener).toHaveBeenCalledTimes(1);
+            expect(en.addEventListener).toHaveBeenCalledTimes(1);
+            expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
 
-        // 登録失敗と rollback の解除失敗を、別々のログで確認する。
-        expect(logger.error).toHaveBeenCalledWith(
-            'subtitle source bind rollback failed',
-            { cleanupError: expect.any(AggregateError) },
-        );
-        expect(logger.error).toHaveBeenCalledWith(
-            'subtitle source bind failed',
-            { error: expect.any(Error) },
-        );
-        expect(listener).not.toHaveBeenCalled();
-        expect(source.getSnapshot()).toEqual({
-            pair: { primary: null, secondary: null },
-            primaryCues: [],
-            secondaryCues: [],
-        });
+            // 登録失敗と rollback の解除失敗を、別々のログで確認する。
+            expect(logger.error).toHaveBeenCalledWith(
+                'subtitle source bind rollback failed',
+                { cleanupError: expect.any(AggregateError) },
+            );
+            expect(logger.error).toHaveBeenCalledWith(
+                'subtitle source bind failed',
+                { error: expect.any(Error) },
+            );
+            expect(listener).not.toHaveBeenCalled();
+            expect(source.getSnapshot()).toEqual({
+                pair: { primary: null, secondary: null },
+                primaryCues: [],
+                secondaryCues: [],
+            });
 
-        expect(() => source.dispose()).not.toThrow();
-        ja.fireCueChange();
+            expect(() => source.dispose()).not.toThrow();
+            ja.fireCueChange();
 
-        expect(listener).not.toHaveBeenCalled();
-        expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
+            expect(listener).not.toHaveBeenCalled();
+            expect(ja.removeEventListener).toHaveBeenCalledTimes(1);
+        } finally {
+            source.dispose();
+        }
     });
 
     // 実際の解除が失敗しても、管理上は旧 binding の通知を無効化する。

@@ -129,7 +129,7 @@ export const resolvePlaybackTarget = (
   const rootEl = resolvePlaybackRoot(doc);
 
   // readiness 判定と session 紐付けの基準になる video を解決する。
-  const videoEl = resolvePlaybackVideo(rootEl);
+  const videoEl = resolvePlaybackVideo(rootEl, doc);
 
   // 将来 panel host を mount する基準要素を解決する。
   const panelMountEl = resolvePanelMountTarget(rootEl);

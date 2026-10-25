@@ -131,6 +131,46 @@ describe('playback-root', () => {
     expect(comparison.hasLayoutTargetChanged).toBe(true);
   });
 
+  it('root 外の video も指定された document 内から解決する', () => {
+    const doc = document.implementation.createHTMLDocument('playback test');
+    doc.body.innerHTML = `
+      <dialog class="playback-view">
+        <div data-testid="video-container"></div>
+        <div data-testid="video-player-content"></div>
+      </dialog>
+      <video></video>
+    `;
+
+    const expectedVideo = doc.querySelector('video');
+
+    expect(expectedVideo).not.toBeNull();
+
+    const target = resolvePlaybackTarget(doc);
+
+    expect(target).not.toBeNull();
+    expect(target?.videoEl).toBe(expectedVideo);
+    expect(target?.snapshot.videoEl).toBe(expectedVideo);
+  });
+
+  it('指定された document に video がなければ別 document から採用しない', () => {
+    const doc = document.implementation.createHTMLDocument('playback test');
+    doc.body.innerHTML = `
+      <dialog class="playback-view">
+        <div data-testid="video-container"></div>
+        <div data-testid="video-player-content"></div>
+      </dialog>
+    `;
+
+    const foreignVideo = document.createElement('video');
+    document.body.appendChild(foreignVideo);
+
+    try {
+      expect(resolvePlaybackTarget(doc)).toBeNull();
+    } finally {
+      foreignVideo.remove();
+    }
+  });
+
   it('returns null when required elements are unresolved', () => {
     document.body.innerHTML = '<div></div>';
 
