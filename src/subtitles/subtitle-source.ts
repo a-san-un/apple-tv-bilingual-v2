@@ -1,7 +1,7 @@
 /**
  * subtitle-source.ts
  *
- * readiness 通過後の video に採用 track を bind し、cuechange 通知と snapshot を提供する。
+ * readiness 通過後の video に採用 track を bind し、cuechange 通知・要約・snapshot を提供する。
  * cue listener は bind 単位の DisposeBag で所有し、再 bind / unbind / dispose で解除する。
  * 解除に失敗して旧 listener が残っても、現在の binding 以外からは通知しない。
  * 管理情報は入出力時にコピーし、実際の TextTrack 参照だけを共有する。
@@ -29,12 +29,23 @@ export type SubtitleSourceVideo = {
 };
 
 /**
+ * 採用情報と cue 件数だけを持つ、取得時点の要約。
+ * 管理情報はコピーし、実 TextTrack の参照だけを共有する。cue 本文・時刻は含めない。
+ */
+export type SubtitleSourceSummary = {
+  pair: ResolvedTrackPair;
+  primaryCueCount: number;
+  secondaryCueCount: number;
+};
+
+/**
  * subtitle source の公開 API。
  * bind / unbind / dispose は再呼び出し可能で、listener 登録解除の失敗を内部で記録する。
  */
 export type SubtitleSource = {
   bind(pair: ResolvedTrackPair): void;
   unbind(): void;
+  getSummary(): SubtitleSourceSummary;
   getSnapshot(): SubtitleSourceSnapshot;
   subscribe(listener: SubtitleSourceListener): DisposeFn;
   dispose(): void;
@@ -79,7 +90,7 @@ const readCueText = (cue: TextTrackCue): string => {
  *
  * @param videoEl readiness 通過後の current video。textTracks の待機はしない。
  * @param options logger の差し替え。省略時は subtitle category の logger を使う。
- * @returns bind / unbind / snapshot / 購読を提供する source。
+ * @returns bind / unbind / 要約 / snapshot / 購読を提供する source。
  *   dispose は session owner が保持して実行する。2 回目以降は何もしない。
  */
 export const createSubtitleSource = (
@@ -326,6 +337,48 @@ export const createSubtitleSource = (
   };
 
   /**
+   * cue 一覧を走査せず、その時点の件数だけを読む。
+   *
+   * @param resolved 要約用にコピー済みの採用情報。null は未採用。
+   * @returns cue 件数。未採用・未読込・空の一覧・読取失敗は0件。失敗は記録する。
+   */
+  const readCueCount = (resolved: ResolvedSubtitleTrack | null): number => {
+    if (resolved === null) {
+      return 0;
+    }
+
+    try {
+      return resolved.track.cues?.length ?? 0;
+    } catch (error) {
+      logger.error('subtitle source failed to read cue count', {
+        track: summarizeTrack(resolved),
+        error,
+      });
+      return 0;
+    }
+  };
+
+  /**
+   * cue 本文・時刻を読まず、採用情報と件数だけの要約を返す。
+   * 取得結果は source 内へ保持せず、呼び出すたびに現在値を読む。
+   *
+   * @returns pair と管理情報の新しい写し、および両役割の cue 件数。
+   *   実 TextTrack のみ共有する。未 bind / dispose 後は両役割とも未採用・0件。
+   */
+  const getSummary = (): SubtitleSourceSummary => {
+    const summaryPair: ResolvedTrackPair = {
+      primary: copyResolvedTrack(pair.primary),
+      secondary: copyResolvedTrack(pair.secondary),
+    };
+
+    return {
+      pair: summaryPair,
+      primaryCueCount: readCueCount(summaryPair.primary),
+      secondaryCueCount: readCueCount(summaryPair.secondary),
+    };
+  };
+
+  /**
    * 現在の bind 状態と cue 一覧の snapshot を返す。
    * pair と track の管理情報はコピーし、受け手による変更が source 内部へ伝わらないようにする。
    * 実際の TextTrack は共有するため、その参照を通したブラウザ状態の変更までは防がない。
@@ -380,6 +433,7 @@ export const createSubtitleSource = (
   return {
     bind,
     unbind,
+    getSummary,
     getSnapshot,
     subscribe,
     dispose,

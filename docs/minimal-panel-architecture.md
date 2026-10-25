@@ -959,9 +959,17 @@ type SubtitleSourceOptions = {
   logger?: Logger;
 };
 
+// source 固有の要約型。定義元は subtitle-source.ts とする。
+type SubtitleSourceSummary = {
+  pair: ResolvedTrackPair;
+  primaryCueCount: number;
+  secondaryCueCount: number;
+};
+
 type SubtitleSource = {
   bind(pair: ResolvedTrackPair): void;
   unbind(): void;
+  getSummary(): SubtitleSourceSummary;
   getSnapshot(): SubtitleSourceSnapshot;
   subscribe(listener: SubtitleSourceListener): DisposeFn;
   dispose(): void;
@@ -980,7 +988,8 @@ function createSubtitleSource(
 - cuechange listener は source が所有し、bind 単位の DisposeBag で解除する。
 - 再 bind では旧 binding の解除を試してから、新しい listener を登録する。
 - 通知は bound / unbound / role 付き cuechange とし、cue 本文は通知に含めない。
-- 購読者は必要なときに `getSnapshot()` で cue 一覧を読む。
+- 採用情報と cue 件数だけが必要な購読者は `getSummary()` を使う。
+- cue 本文と時刻が必要な購読者は、必要なときに `getSnapshot()` で cue 一覧を読む。
 - readiness 待機、retry、track 選定、mode 変更、panel / UI 更新は担当しない。
 
 #### snapshot と参照
@@ -991,6 +1000,17 @@ function createSubtitleSource(
 - cue の track 情報は、その snapshot 用にコピーした管理情報を参照する。
 - 実際の `TextTrack` はコピーせず、listener 登録先と同じ参照を維持する。
 - snapshot は管理情報と cue の写しであり、ブラウザの track 状態を凍結するものではない。
+
+#### 要約取得
+
+- `getSummary()` は、取得時点の採用 pair と primary / secondary の cue 件数を返す。
+- pair と track 管理情報はコピーし、実際の `TextTrack` 参照だけを共有する。
+- cue は `cues.length` だけを読み、各 cue の本文・開始時刻・終了時刻を読まない。cue 配列や cue ごとのオブジェクトを生成しない。
+- 未採用、`cues === null`、空の一覧は0件とする。件数の読取失敗はログに記録して、その役割を0件とする。他方の役割は取得を続ける。
+- 取得のたびに現在値を読み、要約・cue 本文・過去の取得結果を source 内へキャッシュしない。
+- listener、timer、observer は追加せず、既存の binding / cleanup の寿命を変えない。
+- unbind / dispose 後は pair を両方 null、cue 件数を両方0で返す。
+- 接続状態の確認と診断には要約取得を使い、既存の `getSnapshot()` の本文取得・コピー保護の契約は変更しない。
 
 #### 失敗と破棄
 

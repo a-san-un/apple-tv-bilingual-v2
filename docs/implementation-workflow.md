@@ -838,7 +838,7 @@ readiness 待機と retry の実装を index へ移さない。
 ### 実機確認用フラグ
 
 正式な ON/OFF UI の接続前は、
-index の DEBUG_PHASE4_SUBTITLES を開発用の起動手段として使う。
+index の DEBUG_AUTO_ENABLE_SUBTITLES を開発用の起動手段として使う。
 
 - 既定値は false とし、通常起動は OFF / closed を維持する
 - true はローカルの実機確認時にだけ使う

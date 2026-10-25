@@ -149,6 +149,7 @@ export const createFixture = () => {
     });
     const logger = createSilentLogger();
     const source = createSubtitleSource(video, { logger });
+    const getSummary = vi.spyOn(source, 'getSummary');
 
-    return { ja, en, ko, video, pair, logger, source };
+    return { ja, en, ko, video, pair, logger, source, getSummary };
 };

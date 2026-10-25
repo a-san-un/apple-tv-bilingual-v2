@@ -1,18 +1,13 @@
 /**
  * text-track-resolver.ts
  *
- * `video.textTracks` を候補配列へ正規化し、primaryLang / secondaryLang に対する
- * 採用 track を決める pure に近い判定 module。
- * 判定には `language`、`label`、`kind`、`mode` を合わせて使い、
- * 表示中 track の判定では `TextTrack.mode === 'showing'` を優先する。
- *
- * 担当しないこと:
- * - readiness 待機、retry、listener 登録（session-lifecycle / subtitle-source が持つ）
- * - `TextTrack.mode` の書き換え
- * - `activeCues` / active cue 数による表示中判定（hidden track にも active cue があるため）
- * - ブラウザ言語の取得（fallback 値は呼び出し側が引数で渡す）
+ * video.textTracks を正規化し、言語設定に対応する primary / secondary を選定する。
+ * shared/types.ts の track 型を使い、kind、label、mode、言語一致度、
+ * 選定時点の cue の有無から、取得に使う track の優先順位を決める。
+ * 表示中字幕の判定は mode === 'showing' とし、取得候補の選定とは区別する。
+ * session resource は所有せず、readiness 待機、retry、listener 登録、
+ * mode 変更、ブラウザ言語の取得、DOM 描画は担当しない。
  */
-
 import type {
   LanguageCode,
   ResolvedSubtitleTrack,
@@ -20,28 +15,39 @@ import type {
   SubtitleTrackCandidate,
 } from '../shared/types';
 
-/** 字幕として採用してよい `TextTrack.kind`。metadata / chapters などは除外する。 */
+/** 字幕として採用可能な kind。metadata / chapters などは除外する。 */
 const SUBTITLE_KINDS = new Set<string>(['subtitles', 'captions']);
 
-/** forced（強制字幕）らしい label。通常字幕の代わりにならないため候補から外す。 */
+/** 通常字幕の代わりに採用しない forced label の判定。 */
 const FORCED_LABEL_PATTERN = /forced|強制/i;
 
-/** 表示中判定の優先順位。数値が小さいほど優先する。 */
+/** mode の優先順位。表示中、非表示で有効、無効の順とする。 */
 const MODE_PRIORITY: Record<TextTrackMode, number> = {
   showing: 0,
   hidden: 1,
   disabled: 2,
 };
 
-/** 言語一致の強さ。`exact` は完全一致、`base` は基本言語だけの一致。 */
+/** 要求言語と候補言語の一致度。 */
 type LanguageMatch = 'exact' | 'base' | 'none';
 
-/** resolver が読む `TextTrack` 一覧の最小形。`TextTrackList` と配列の両方を受け取る。 */
+/**
+ * 選定1回分の比較情報。
+ * cue の有無は比較のたびに読み直さず、候補化した時点の値を使う。
+ */
+type RankedCandidate = {
+  candidate: SubtitleTrackCandidate;
+  match: LanguageMatch;
+  hasCues: boolean;
+};
+
+/** resolver が読む一覧の最小形。TextTrackList と配列の両方を受け取る。 */
 export type TextTrackListLike = ArrayLike<TextTrack>;
 
 /**
- * `resolveTrackPair()` の入力。
- * `secondaryLang` が null のときだけ `fallbackSecondaryLang` を使う。
+ * primary / secondary 選定の入力。
+ * secondaryLang が null のときだけ fallbackSecondaryLang を利用する。
+ * fallback の取得と保存設定の検証は呼び出し側が担当する。
  */
 export type ResolveTrackPairArgs = {
   textTracks: TextTrackListLike;
@@ -51,34 +57,40 @@ export type ResolveTrackPairArgs = {
 };
 
 /**
- * 言語コードを比較用にそろえる。
+ * 言語コードを比較用に正規化する。
  *
- * @param value `TextTrack.language` または設定値。空や未定義は空文字になる。
- * @returns 前後空白を除き、小文字化して `_` を `-` にそろえた値。
+ * @param value track または設定の言語コード。null / undefined は空文字になる。
+ * @returns 前後空白を除き、小文字化し、区切りのアンダースコアをハイフンへ変えた値。
  */
-export const normalizeLanguageCode = (value: string | null | undefined): string =>
-  (value ?? '').trim().toLowerCase().replace(/_/g, '-');
+export const normalizeLanguageCode = (
+  value: string | null | undefined,
+): string => (value ?? '').trim().toLowerCase().replace(/_/g, '-');
 
 /**
- * 正規化済み言語コードを基本言語と補助 subtag に分ける。
+ * 正規化済み言語コードを基本言語と残りの subtag に分ける。
  *
- * @param normalized `normalizeLanguageCode()` 済みの値。
- * @returns `ja-jp` なら `{ base: 'ja', subtag: 'jp' }`。subtag がなければ空文字。
+ * @param normalized normalizeLanguageCode 済みの値。
+ * @returns 基本言語と subtag。subtag がなければ空文字。
  */
-const splitLanguage = (normalized: string): { base: string; subtag: string } => {
+const splitLanguage = (
+  normalized: string,
+): { base: string; subtag: string } => {
   const [base = '', ...rest] = normalized.split('-');
   return { base, subtag: rest.join('-') };
 };
 
 /**
  * 要求言語と track 言語の一致度を判定する。
- * 地域・script が両方にあって異なる場合（`zh-hans` と `zh-hant` など）は一致としない。
+ * 両方が異なる地域・script を指定している場合は一致させない。
  *
  * @param requested 正規化済みの要求言語。
  * @param trackLanguage 正規化済みの track 言語。
- * @returns 完全一致なら `exact`、片側だけ subtag を持つ基本言語一致なら `base`、それ以外は `none`。
+ * @returns 完全一致、片側だけ subtag を持つ基本言語一致、または不一致。
  */
-const matchLanguage = (requested: string, trackLanguage: string): LanguageMatch => {
+const matchLanguage = (
+  requested: string,
+  trackLanguage: string,
+): LanguageMatch => {
   if (requested === '' || trackLanguage === '') {
     return 'none';
   }
@@ -89,11 +101,12 @@ const matchLanguage = (requested: string, trackLanguage: string): LanguageMatch 
 
   const req = splitLanguage(requested);
   const trk = splitLanguage(trackLanguage);
+
   if (req.base !== trk.base) {
     return 'none';
   }
 
-  // 両方が別の地域・script を指定しているときは別言語として扱い、誤採用を避ける。
+  // 異なる地域・script を、cue の有無だけで代替採用しない。
   if (req.subtag !== '' && trk.subtag !== '') {
     return 'none';
   }
@@ -102,50 +115,78 @@ const matchLanguage = (requested: string, trackLanguage: string): LanguageMatch 
 };
 
 /**
- * `TextTrackList` / `TextTrack[]` を候補配列へ正規化する。
- * 字幕以外の kind も含めた全 track を返し、採用可否は `isSubtitleCandidate()` で判定する。
- * `language` は比較用に正規化した値（小文字・`-` 区切り）を入れる。
+ * track 一覧を正規化した候補配列へ変換する。
+ * 字幕以外の kind も含め、採用可否は isSubtitleCandidate で判定する。
  *
- * @param textTracks 正規化する track 一覧。readiness 通過後の `video.textTracks` を想定する。
- * @returns 取得時点の `language` / `label` / `kind` / `mode` を写した候補配列。
+ * @param textTracks 正規化する一覧。空の一覧も受け付ける。
+ * @returns 取得時点の管理情報と実 TextTrack 参照を持つ新しい候補配列。
+ * @throws language、label、kind、mode などの track 情報を読み取れない場合。
  */
-export const normalizeTextTracks = (textTracks: TextTrackListLike): SubtitleTrackCandidate[] =>
-  Array.from(textTracks, (track, index) => ({
-    // Apple TV+ の `TextTrack.id` は空のことがあるため、空なら位置から識別子を作る。
-    id: track.id !== '' ? track.id : `track-${index}`,
-    index,
-    language: normalizeLanguageCode(track.language),
-    label: (track.label ?? '').trim().replace(/\s+/g, ' '),
-    kind: track.kind,
-    mode: track.mode,
-    track,
-  }));
+export const normalizeTextTracks = (
+  textTracks: TextTrackListLike,
+): SubtitleTrackCandidate[] => {
+  const candidates: SubtitleTrackCandidate[] = [];
+
+  for (const [index, track] of Array.from(textTracks).entries()) {
+    candidates.push({
+      // id が空でも候補を識別できるよう位置を補助に使う。永続識別子ではない。
+      id: track.id !== '' ? track.id : `track-${index}`,
+      index,
+      language: normalizeLanguageCode(track.language),
+      label: (track.label ?? '').trim().replace(/\s+/g, ' '),
+      kind: track.kind,
+      mode: track.mode,
+      track,
+    });
+  }
+
+  return candidates;
+};
 
 /**
- * 候補が字幕 track として採用対象になり得るかを判定する。
- * `language` だけでは判定せず、`kind` と `label` も見る。
+ * 字幕の採用対象になり得る候補かを判定する。
  *
  * @param candidate 正規化済み候補。
- * @returns kind が subtitles / captions、forced でない、language が空でないとき true。
+ * @returns subtitles / captions で、forced ではなく、言語が空でない場合は true。
  */
-export const isSubtitleCandidate = (candidate: SubtitleTrackCandidate): boolean =>
+export const isSubtitleCandidate = (
+  candidate: SubtitleTrackCandidate,
+): boolean =>
   SUBTITLE_KINDS.has(candidate.kind) &&
   !FORCED_LABEL_PATTERN.test(candidate.label) &&
   candidate.language !== '';
 
 /**
- * 候補同士の優先順位を比較する。
- * mode（showing → hidden → disabled）、言語一致度、kind、textTracks 内の位置の順で決める。
+ * 選定時点で track が cue を持つかを確認する。
+ * 本文のコピー、active cue の確認、mode の変更は行わない。
  *
- * @param a 比較対象の候補と一致度。
- * @param b 比較対象の候補と一致度。
- * @returns `Array.prototype.sort` 用の比較値。負なら a を優先する。
+ * @param track 確認する実 TextTrack。
+ * @returns cue が1件以上あれば true。null、空、読取失敗の場合は false。
+ */
+const hasReadableCues = (track: TextTrack): boolean => {
+  try {
+    return (track.cues?.length ?? 0) > 0;
+  } catch {
+    // 読めない候補だけで選定全体を止めず、他の候補を引き続き比較する。
+    return false;
+  }
+};
+
+/**
+ * 言語条件を満たす候補同士の優先順位を比較する。
+ * mode、言語一致度、cue の有無、kind、元の位置の順で決める。
+ *
+ * @param a 比較する候補と、今回の選定で読み取った比較情報。
+ * @param b もう一方の候補と比較情報。
+ * @returns sort 用の比較値。負なら a、正なら b を優先する。
  */
 const compareCandidates = (
-  a: { candidate: SubtitleTrackCandidate; match: LanguageMatch },
-  b: { candidate: SubtitleTrackCandidate; match: LanguageMatch },
+  a: RankedCandidate,
+  b: RankedCandidate,
 ): number => {
-  const modeDiff = MODE_PRIORITY[a.candidate.mode] - MODE_PRIORITY[b.candidate.mode];
+  const modeDiff =
+    MODE_PRIORITY[a.candidate.mode] - MODE_PRIORITY[b.candidate.mode];
+
   if (modeDiff !== 0) {
     return modeDiff;
   }
@@ -154,79 +195,98 @@ const compareCandidates = (
     return a.match === 'exact' ? -1 : 1;
   }
 
+  // 同じ条件なら、空の subtitles より cue を持つ captions を優先する。
+  if (a.hasCues !== b.hasCues) {
+    return a.hasCues ? -1 : 1;
+  }
+
   if (a.candidate.kind !== b.candidate.kind) {
     return a.candidate.kind === 'subtitles' ? -1 : 1;
   }
 
+  // 同等候補は元の順序を維持し、発話の有無や cue 件数で選択を揺らさない。
   return a.candidate.index - b.candidate.index;
 };
 
 /**
- * 指定言語の採用候補を優先順に並べて返す。
+ * 指定言語の候補を、取得用の優先順で返す。
+ * cue の有無は呼び出しごとに読むが、active cue は順位に使わない。
  *
- * @param candidates `normalizeTextTracks()` の結果。
- * @param lang 要求言語。null / 空文字なら候補なし。
- * @returns 採用対象の候補を、showing 優先の順に並べた新しい配列。
+ * @param candidates 正規化済み候補。元の配列は変更しない。
+ * @param lang 要求言語。null または空文字なら候補なし。
+ * @returns 採用可能な候補を優先順に並べた新しい配列。
  */
 export const findLanguageCandidates = (
   candidates: readonly SubtitleTrackCandidate[],
   lang: LanguageCode | null,
 ): SubtitleTrackCandidate[] => {
   const requested = normalizeLanguageCode(lang);
+
   if (requested === '') {
     return [];
   }
 
-  return candidates
-    .filter(isSubtitleCandidate)
-    .map((candidate) => ({ candidate, match: matchLanguage(requested, candidate.language) }))
-    .filter((entry) => entry.match !== 'none')
-    .sort(compareCandidates)
-    .map((entry) => entry.candidate);
+  const ranked: RankedCandidate[] = [];
+
+  for (const candidate of candidates) {
+    if (!isSubtitleCandidate(candidate)) {
+      continue;
+    }
+
+    const match = matchLanguage(requested, candidate.language);
+    if (match === 'none') {
+      continue;
+    }
+
+    ranked.push({
+      candidate,
+      match,
+      hasCues: hasReadableCues(candidate.track),
+    });
+  }
+
+  ranked.sort(compareCandidates);
+
+  const result: SubtitleTrackCandidate[] = [];
+  for (const entry of ranked) {
+    result.push(entry.candidate);
+  }
+
+  return result;
 };
 
 /**
  * 画面に表示中の字幕 track を返す。
- * 判定は `mode === 'showing'` だけで行い、active cue の有無は使わない。
+ * cue や active cue の有無ではなく、mode === 'showing' で判定する。
  *
- * @param candidates `normalizeTextTracks()` の結果。呼び出し直前に正規化した値を渡す。
- * @returns showing の字幕候補。複数あれば textTracks 内で先頭のもの、なければ null。
+ * @param candidates 呼び出し直前に正規化した候補。
+ * @returns showing の字幕候補。複数なら一覧内で先頭の候補、なければ null。
  */
 export const findShowingTrack = (
   candidates: readonly SubtitleTrackCandidate[],
-): SubtitleTrackCandidate | null =>
-  candidates.find((candidate) => candidate.mode === 'showing' && isSubtitleCandidate(candidate)) ??
-  null;
+): SubtitleTrackCandidate | null => {
+  for (const candidate of candidates) {
+    if (
+      candidate.mode === 'showing' &&
+      isSubtitleCandidate(candidate)
+    ) {
+      return candidate;
+    }
+  }
 
-/**
- * primary / secondary の採用 track を決める。
- * 一致候補がない役割は null を返し、例外にはしない。
- * primary と secondary に同じ track は採用しない。
- *
- * @param args track 一覧と言語設定。`secondaryLang` が null なら `fallbackSecondaryLang` を使う。
- * @returns primary / secondary の採用結果。どちらも見つからなければ両方 null。
- */
-export const resolveTrackPair = (args: ResolveTrackPairArgs): ResolvedTrackPair => {
-  const candidates = normalizeTextTracks(args.textTracks);
-  const primary = findLanguageCandidates(candidates, args.primaryLang)[0] ?? null;
-
-  const secondaryLang = resolveSecondaryLang(args);
-  const secondary =
-    findLanguageCandidates(candidates, secondaryLang).find(
-      (candidate) => candidate.track !== primary?.track,
-    ) ?? null;
-
-  return { primary, secondary };
+  return null;
 };
 
 /**
  * secondary の要求言語を決める。
- * fallback（ブラウザ言語）が primary と同じ基本言語なら、同一言語の二重表示を避けるため使わない。
+ * 明示 secondary がある場合は、fallback で置き換えない。
  *
- * @param args `resolveTrackPair()` の入力。
- * @returns secondary として探す言語。使わない場合は null。
+ * @param args 選定の入力。fallback が未指定・null・空文字なら利用しない。
+ * @returns secondary の要求言語。同じ基本言語の fallback は null。
  */
-const resolveSecondaryLang = (args: ResolveTrackPairArgs): LanguageCode | null => {
+const resolveSecondaryLang = (
+  args: ResolveTrackPairArgs,
+): LanguageCode | null => {
   if (args.secondaryLang !== null) {
     return args.secondaryLang;
   }
@@ -236,17 +296,46 @@ const resolveSecondaryLang = (args: ResolveTrackPairArgs): LanguageCode | null =
     return null;
   }
 
-  const primaryBase = splitLanguage(normalizeLanguageCode(args.primaryLang)).base;
+  const primaryBase = splitLanguage(
+    normalizeLanguageCode(args.primaryLang),
+  ).base;
+
   return splitLanguage(fallback).base === primaryBase ? null : fallback;
 };
 
 /**
- * ログ確認用に track を 1 行へ要約する。
- * 形式は `docs/apple-tv-dom-observations.md` の track 表記（index: kind: label: language）にそろえる。
- * `mode` は正規化した時点の値を出す。
+ * 設定言語に対応する primary / secondary の採用 track を決める。
+ * 同じ実 TextTrack を両方の役割へ採用しない。
  *
- * @param track 要約する track。候補型なら index を、そうでなければ id を先頭に出す。null は `none`。
- * @returns `82: subtitles: 日本語: ja (showing)` のような文字列。
+ * @param args 一覧と言語設定。secondaryLang が null のときだけ fallback を使う。
+ * @returns 採用結果。候補がない役割は null。cue が空でも候補自体は返せる。
+ * @throws track の管理情報を正規化できない場合。cue の読取失敗だけでは投げない。
+ */
+export const resolveTrackPair = (
+  args: ResolveTrackPairArgs,
+): ResolvedTrackPair => {
+  const candidates = normalizeTextTracks(args.textTracks);
+  const primary =
+    findLanguageCandidates(candidates, args.primaryLang)[0] ?? null;
+  const secondaryLang = resolveSecondaryLang(args);
+
+  let secondary: SubtitleTrackCandidate | null = null;
+
+  for (const candidate of findLanguageCandidates(candidates, secondaryLang)) {
+    if (candidate.track !== primary?.track) {
+      secondary = candidate;
+      break;
+    }
+  }
+
+  return { primary, secondary };
+};
+
+/**
+ * track をログ確認用の1行へ要約する。
+ *
+ * @param track 要約対象。候補型なら index、それ以外は id を使う。null は未採用。
+ * @returns index または id、kind、label、language、正規化時点の mode を含む文字列。
  */
 export const summarizeTrack = (
   track: ResolvedSubtitleTrack | SubtitleTrackCandidate | null,

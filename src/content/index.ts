@@ -20,10 +20,11 @@ import type { RestartReason } from '../shared/types';
 import { createUiStateStore } from '../ui/ui-state';
 
 /**
- * Phase 4 の実機確認時だけ、自動起動を許可する開発用フラグ。
- * 正式な ON/OFF UI ではなく、通常は false として OFF 開始を維持する。
+ * 字幕接続の実機確認用に、保存設定が ready の場合だけ自動的に ON にする。
+ * 正式な ON/OFF UI とは別の開発用フラグで、Phase にかかわらず使用する。
+ * 通常は false として OFF 開始を維持する。
  */
-const DEBUG_PHASE4_SUBTITLES = true;
+const DEBUG_AUTO_ENABLE_SUBTITLES = true;
 
 /** session 状態を観測する debug badge を表示する。 */
 const DEBUG_SESSION_BADGE = true;
@@ -42,7 +43,10 @@ const bootContentScript = async (): Promise<void> => {
   const uiStateStore = createUiStateStore();
   const debugBadge = createSessionDebugBadge(DEBUG_SESSION_BADGE);
   const sessionLifecycle = createSessionLifecycle({
-    onSubtitleObservation: debugBadge.updateSubtitle,
+    // badge 無効時は、診断専用の字幕観測 callback を接続しない。
+    ...(DEBUG_SESSION_BADGE
+      ? { onSubtitleObservation: debugBadge.updateSubtitle }
+      : {}),
     ...(settingsResult.status === 'ready'
       ? {
         subtitle: {
@@ -190,7 +194,7 @@ const bootContentScript = async (): Promise<void> => {
     );
 
     // ready は設定の有効性だけを表す。通常起動で自動的に ON にはしない。
-    if (DEBUG_PHASE4_SUBTITLES && settingsResult.status === 'ready') {
+    if (DEBUG_AUTO_ENABLE_SUBTITLES && settingsResult.status === 'ready') {
       uiStateStore.setExtensionEnabled(true);
     }
 

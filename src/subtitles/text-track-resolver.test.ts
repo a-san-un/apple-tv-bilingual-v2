@@ -1,10 +1,10 @@
 /**
  * text-track-resolver.test.ts
  *
- * track の正規化・採用判定と、settings store からの設定受け渡しを確認する。
- * fake track と読込用 storage を使い、正規化済み設定と runtime fallback を区別する。
- * readiness、source の listener、実ブラウザの字幕切替は扱わない。
- * session resource は生成せず、track 選定後の binding と cleanup は source 側で確認する。
+ * track の正規化、採用順位、表示中判定、settings store の設定受け渡しを確認する。
+ * fake track の cue 状態を使い、取得候補の判定と表示中判定を分けて検証する。
+ * resolver は resource を生成せず、binding と cleanup は source 側で確認する。
+ * readiness、listener 登録、mode 制御、Apple TV+ 実画面は対象外とする。
  */
 import { describe, expect, it } from 'vitest';
 
@@ -21,22 +21,23 @@ import {
   type StorageAreaLike,
 } from '../settings/settings-store';
 
-/** test double の初期値。省略した項目は字幕 track の典型値で埋める。 */
+/** test double の初期値。cueCount の未指定または null は cues 未取得を表す。 */
 type FakeTrackInit = {
   language: string;
   label?: string;
   kind?: string;
   mode?: TextTrackMode;
   id?: string;
+  cueCount?: number | null;
   activeCueCount?: number;
 };
 
 /**
- * resolver が読む項目だけを持つ TextTrack 相当を作る。
- * activeCues も持たせ、表示中判定に使わないことを確認する。
+ * resolver が読む項目を持つ TextTrack 相当を作る。
+ * cue 本文は不要なので、件数だけを持つ一覧を使う。
  *
- * @param init track の初期値。
- * @returns TextTrack として渡せる test double。
+ * @param init 言語、kind、mode と cue 件数。省略値は字幕 track の典型値で埋める。
+ * @returns resolver へ TextTrack として渡せる test double。
  */
 const fakeTrack = (init: FakeTrackInit): TextTrack =>
   ({
@@ -46,12 +47,14 @@ const fakeTrack = (init: FakeTrackInit): TextTrack =>
     kind: init.kind ?? 'subtitles',
     mode: init.mode ?? 'hidden',
     activeCues: { length: init.activeCueCount ?? 0 },
-    cues: null,
+    cues:
+      init.cueCount === undefined || init.cueCount === null
+        ? null
+        : { length: init.cueCount },
   }) as unknown as TextTrack;
 
 /**
- * 保存値を test double の storage から読み、実際の settings store で正規化する。
- * 想定外の設定状態は、後続の resolver 判定へ進めずテストを失敗させる。
+ * 保存値を test double の storage から読み、実 settings store で正規化する。
  *
  * @param stored storage が返す保存値。欠落キーや旧形式値を含めてよい。
  * @returns 正規化済みの ready 設定。
@@ -94,7 +97,7 @@ describe('normalizeTextTracks', () => {
   it('TextTrackList 相当の ArrayLike を候補配列に正規化する', () => {
     const ja = fakeTrack({
       language: ' JA_jp ',
-      label: ' 日本語  字幕 ',
+      label: ' 日本語   字幕 ',
       mode: 'showing',
     });
     const en = fakeTrack({ language: 'en', id: 'apple-28' });
@@ -112,7 +115,11 @@ describe('normalizeTextTracks', () => {
       mode: 'showing',
       track: ja,
     });
-    expect(candidates[1]).toMatchObject({ id: 'apple-28', index: 1, track: en });
+    expect(candidates[1]).toMatchObject({
+      id: 'apple-28',
+      index: 1,
+      track: en,
+    });
   });
 });
 
@@ -142,7 +149,7 @@ describe('findLanguageCandidates', () => {
     expect(result.map((candidate) => candidate.track)).toEqual([normal]);
   });
 
-  it('同じ mode なら kind は subtitles を captions より優先する', () => {
+  it('mode と cue の有無が同じなら subtitles を captions より優先する', () => {
     const captions = fakeTrack({ language: 'en', kind: 'captions' });
     const subtitles = fakeTrack({ language: 'en', kind: 'subtitles' });
 
@@ -176,7 +183,7 @@ describe('findLanguageCandidates', () => {
     expect(result[0]?.track).toBe(showingCaptions);
   });
 
-  it('同じ mode なら完全一致を基本言語一致より優先する', () => {
+  it('同じ mode と cue 状態なら完全一致を基本言語一致より優先する', () => {
     const base = fakeTrack({ language: 'en' });
     const exact = fakeTrack({ language: 'en-US' });
 
@@ -234,7 +241,9 @@ describe('findShowingTrack', () => {
       showingWithoutActiveCues,
     ]);
 
-    expect(findShowingTrack(candidates)?.track).toBe(showingWithoutActiveCues);
+    expect(findShowingTrack(candidates)?.track).toBe(
+      showingWithoutActiveCues,
+    );
   });
 
   it('showing がなければ active cue があっても null を返す', () => {
@@ -287,6 +296,7 @@ describe('resolveTrackPair', () => {
         secondaryLang: 'en',
       }),
     ).toMatchObject({ primary: null, secondary: { track: en } });
+
     expect(
       resolveTrackPair({
         textTracks: [],
@@ -352,11 +362,308 @@ describe('resolveTrackPair', () => {
   });
 });
 
+describe('cue の可用性に基づく取得候補の選定', () => {
+  it('同じ hidden の英語候補なら、空の subtitles より cue のある captions を採用する', () => {
+    const emptySubtitles = fakeTrack({
+      language: 'en',
+      kind: 'subtitles',
+      mode: 'hidden',
+      cueCount: 0,
+    });
+    const loadedCaptions = fakeTrack({
+      language: 'en',
+      kind: 'captions',
+      mode: 'hidden',
+      cueCount: 3,
+      activeCueCount: 1,
+    });
+    const ja = fakeTrack({
+      language: 'ja',
+      mode: 'showing',
+      cueCount: 4,
+    });
+
+    const pair = resolveTrackPair({
+      textTracks: [emptySubtitles, ja, loadedCaptions],
+      primaryLang: 'en-GB',
+      secondaryLang: 'ja',
+    });
+
+    expect(pair.primary?.track).toBe(loadedCaptions);
+    expect(pair.secondary?.track).toBe(ja);
+  });
+
+  it('両方に cue があれば、従来どおり subtitles を優先する', () => {
+    const captions = fakeTrack({
+      language: 'en',
+      kind: 'captions',
+      cueCount: 10,
+    });
+    const subtitles = fakeTrack({
+      language: 'en',
+      kind: 'subtitles',
+      cueCount: 1,
+    });
+
+    const candidates = findLanguageCandidates(
+      normalizeTextTracks([captions, subtitles]),
+      'en',
+    );
+
+    expect(candidates[0]?.track).toBe(subtitles);
+  });
+
+  it('同等候補では cue 件数の多さではなく元の位置を維持する', () => {
+    const first = fakeTrack({
+      language: 'en',
+      cueCount: 1,
+    });
+    const second = fakeTrack({
+      language: 'en',
+      cueCount: 10,
+    });
+
+    const candidates = findLanguageCandidates(
+      normalizeTextTracks([first, second]),
+      'en',
+    );
+
+    expect(candidates.map((candidate) => candidate.track)).toEqual([
+      first,
+      second,
+    ]);
+  });
+
+  it('active cue がない区間でも、cue を持つ候補を利用する', () => {
+    const empty = fakeTrack({
+      language: 'en',
+      cueCount: 0,
+    });
+    const loaded = fakeTrack({
+      language: 'en',
+      cueCount: 3,
+      activeCueCount: 0,
+    });
+
+    const pair = resolveTrackPair({
+      textTracks: [empty, loaded],
+      primaryLang: 'en',
+      secondaryLang: null,
+    });
+
+    expect(pair.primary?.track).toBe(loaded);
+    expect(findShowingTrack(normalizeTextTracks([empty, loaded]))).toBeNull();
+  });
+
+  it('cue が null または空でも、候補をすべて失わない', () => {
+    const captions = fakeTrack({
+      language: 'en',
+      kind: 'captions',
+      cueCount: null,
+    });
+    const subtitles = fakeTrack({
+      language: 'en',
+      kind: 'subtitles',
+      cueCount: 0,
+    });
+
+    const pair = resolveTrackPair({
+      textTracks: [captions, subtitles],
+      primaryLang: 'en',
+      secondaryLang: null,
+    });
+
+    expect(pair.primary?.track).toBe(subtitles);
+  });
+
+  it('cue を読めない候補があっても、他の取得可能な候補を選べる', () => {
+    const unreadable = fakeTrack({
+      language: 'en',
+      kind: 'subtitles',
+    });
+    const loaded = fakeTrack({
+      language: 'en',
+      kind: 'captions',
+      cueCount: 2,
+    });
+
+    Object.defineProperty(unreadable, 'cues', {
+      get() {
+        throw new Error('cues unavailable');
+      },
+    });
+
+    let pair: ReturnType<typeof resolveTrackPair> | undefined;
+
+    expect(() => {
+      pair = resolveTrackPair({
+        textTracks: [unreadable, loaded],
+        primaryLang: 'en',
+        secondaryLang: null,
+      });
+    }).not.toThrow();
+
+    expect(pair?.primary?.track).toBe(loaded);
+  });
+
+  it('取得候補の選定でも activeCues を読み取らない', () => {
+    const track = fakeTrack({
+      language: 'en',
+      cueCount: 2,
+    });
+    let activeCueReads = 0;
+
+    Object.defineProperty(track, 'activeCues', {
+      get() {
+        activeCueReads += 1;
+        throw new Error('activeCues must not be read');
+      },
+    });
+
+    const pair = resolveTrackPair({
+      textTracks: [track],
+      primaryLang: 'en',
+      secondaryLang: null,
+    });
+
+    expect(pair.primary?.track).toBe(track);
+    expect(activeCueReads).toBe(0);
+  });
+
+  it('同じ候補でも、次の選定では最新の cue 状態を使う', () => {
+    const subtitles = fakeTrack({
+      language: 'en',
+      kind: 'subtitles',
+      cueCount: 0,
+    });
+    const captions = fakeTrack({
+      language: 'en',
+      kind: 'captions',
+      cueCount: 0,
+    });
+    const candidates = normalizeTextTracks([subtitles, captions]);
+
+    expect(findLanguageCandidates(candidates, 'en')[0]?.track).toBe(
+      subtitles,
+    );
+
+    Object.defineProperty(captions, 'cues', {
+      configurable: true,
+      value: { length: 2 },
+    });
+
+    expect(findLanguageCandidates(candidates, 'en')[0]?.track).toBe(
+      captions,
+    );
+  });
+
+  it('cue がある別言語や forced track で要求言語を置き換えない', () => {
+    const normal = fakeTrack({
+      language: 'en',
+      cueCount: 0,
+    });
+    const foreign = fakeTrack({
+      language: 'fr',
+      cueCount: 3,
+    });
+    const forced = fakeTrack({
+      language: 'en',
+      label: 'English (Forced)',
+      cueCount: 3,
+    });
+
+    const pair = resolveTrackPair({
+      textTracks: [foreign, forced, normal],
+      primaryLang: 'en',
+      secondaryLang: null,
+    });
+
+    expect(pair.primary?.track).toBe(normal);
+  });
+
+  it('showing の優先は、hidden 候補の cue の有無で変更しない', () => {
+    const showing = fakeTrack({
+      language: 'en',
+      mode: 'showing',
+      cueCount: 0,
+    });
+    const hidden = fakeTrack({
+      language: 'en',
+      kind: 'captions',
+      mode: 'hidden',
+      cueCount: 3,
+    });
+
+    const pair = resolveTrackPair({
+      textTracks: [hidden, showing],
+      primaryLang: 'en',
+      secondaryLang: null,
+    });
+
+    expect(pair.primary?.track).toBe(showing);
+  });
+
+  it('cue がある地域違いの候補を、完全一致より優先しない', () => {
+    const exact = fakeTrack({
+      language: 'en-GB',
+      cueCount: 0,
+    });
+    const base = fakeTrack({
+      language: 'en',
+      kind: 'captions',
+      cueCount: 3,
+    });
+    const differentRegion = fakeTrack({
+      language: 'en-US',
+      cueCount: 3,
+    });
+
+    const pair = resolveTrackPair({
+      textTracks: [base, differentRegion, exact],
+      primaryLang: 'en-GB',
+      secondaryLang: null,
+    });
+
+    expect(pair.primary?.track).toBe(exact);
+  });
+
+  it('選定によって track の mode を書き換えない', () => {
+    const track = fakeTrack({
+      language: 'en',
+      cueCount: 2,
+    });
+    let modeWrites = 0;
+
+    Object.defineProperty(track, 'mode', {
+      get() {
+        return 'hidden';
+      },
+      set() {
+        modeWrites += 1;
+        throw new Error('mode must not be changed');
+      },
+    });
+
+    const pair = resolveTrackPair({
+      textTracks: [track],
+      primaryLang: 'en',
+      secondaryLang: null,
+    });
+
+    expect(pair.primary?.track).toBe(track);
+    expect(modeWrites).toBe(0);
+  });
+});
+
 describe('summarizeTrack', () => {
-  it('観測ログと同じ形式で track を 1 行に要約する', () => {
+  it('観測ログと同じ形式で track を1行に要約する', () => {
     const tracks = Array.from({ length: 83 }, (_, index) =>
       index === 82
-        ? fakeTrack({ language: 'ja', label: '日本語', mode: 'showing' })
+        ? fakeTrack({
+          language: 'ja',
+          label: '日本語',
+          mode: 'showing',
+        })
         : fakeTrack({ language: 'xx', kind: 'metadata' }),
     );
     const pair = resolveTrackPair({
