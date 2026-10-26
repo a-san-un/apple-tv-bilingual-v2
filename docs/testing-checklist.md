@@ -152,16 +152,40 @@ npm run test
 - ネイティブ字幕 UI で、少なくとも primary 候補と secondary 候補が存在するコンテンツを使う。
 - 手動スモークテストは、原則として typecheck、lint、test がすべて成功してから開始する。
 - 不具合調査時は、debug log または health snapshot で設定、採用 track、current subtitle、session 状態、layout 状態、UI state を観測できる状態を用意する。
-- 初期版では `extension enabled state` と `panel open state` は保存されず、起動時は毎回 OFF / closed で始まる前提で確認する。
+- 初期版では `extension enabled state` と `panel open state` は保存されない。通常起動の確認では、毎回 OFF / closed で始まることを確認する。
+- 開発用の自動 ON を使う実機確認は、通常起動の確認と分ける。フラグの役割・維持期限は `implementation-workflow.md` の「実機確認用フラグ」に従う。
+- 開発用フラグを使った場合は、その名前・値と確認範囲を実施結果に記録する。自動 ON での確認を、通常起動の OFF 開始や正式な ON/OFF toggle の確認済みとして扱わない。
+- 診断表示を有効にした確認と、無効にした確認を区別して記録する。
 - 保存設定と runtime state を混同しない前提で確認する。
 
-手動スモーク前の実行コマンド:
+### 手動スモーク前の準備
 
-```bash
-npm run typecheck
-npm run lint
-npm run test
-```
+1. 対象リポジトリで、次の自動検証を実行し、すべて成功したことを確認する。
+
+   ```zsh
+   npm run check && npm run lint && npm test
+   ```
+
+2. 実機確認に使うコードと開発用フラグの値を確認する。フラグの運用は `implementation-workflow.md` の「実機確認用フラグ」に従う。
+
+3. 次の build を実行し、成功したことを確認する。
+
+   ```zsh
+   npm run build
+   ```
+
+   現行の build は `clean` を呼び、生成物の `dist` を削除して再生成する。
+   ソースファイルの削除とは区別し、実行前に対象と実行許可を確認する。
+   削除を伴う操作の許可がない場合は、実行せず確認を求める。
+
+4. Chrome の拡張機能管理画面で、対象の v2 拡張を再読み込みする。初回登録時は、このリポジトリの `dist` を読み込み先にする。
+
+5. Apple TV+ の対象ページを再読み込みする。build と拡張再読み込みだけで、開いているページの content script まで更新されたとは扱わない。
+
+6. 保存設定と再生対象を確認し、今回の接続範囲に対応する項目を実施する。設定を変更した場合は、保存後にページを再読み込みする。
+
+実施結果には、使用したフラグの値、自動検証・build の結果、
+拡張とページの再読み込みの実施有無、未確認事項を記録する。
 
 ## popup 設定の確認項目
 
@@ -263,19 +287,42 @@ listener 解除失敗時の確認は「cleanup、二重 listener、二重描画�
 - `src/subtitles/subtitle-history.ts`
 - `src/panel/panel-renderer.ts`
 
+契約の参照先:
+- builder の公開 API、入力条件、最小ケースと未確定ケースは、
+  `minimal-panel-architecture.md` §17 の `subtitle-block-builder.ts` を正本とする。
+- 共通型は同文書の §18 を参照する。
+
 自動テストで確認する項目:
-- cue 群から `SubtitleBlock[]` を生成できること。
-- `startTime` と `endTime` が逆転しないこと。
+
+最初の builder 実装単位:
+- primary / secondary とも空なら、空の配列を返すこと。
+- primary のみ1件なら、その時刻・本文と `secondaryText: null` を持つ1 block を返すこと。
+- 同じ開始・終了時刻の primary / secondary が各1件なら、二言語を持つ1 block を返すこと。
+- 最小ケースの時刻と本文を、丸め・trim・補完せずに返すこと。
+- 入力配列と各 cue を変更しないこと。
+- 呼び出しごとに新しい配列と block オブジェクトを返し、前の戻り値の変更が次の結果へ影響しないこと。
+- cue の track 管理情報や実 `TextTrack` の状態を読まないこと。
+- 戻り値に cue・track の参照や id / key を含めないこと。
+
+後続の builder / history 実装単位:
+- 確定した契約に従い、複数 cue、時刻ずれ、重なり、本文・時刻の不正値を扱えること。
+- `startTime` と `endTime` が逆転した block を生成しないこと。
 - primary / secondary の時刻対応づけが期待どおりであること。
 - secondary 不在時でも block 構造が破綻しないこと。
-- `SubtitleBlock[]` から current / previous / next を導出できること。
+- `SubtitleBlock[]` から current / past / future を導出できること。
 - 境界時刻、先頭、末尾、空配列を安全に扱えること。
+
+最小ケースのテスト成功を、未確定ケース、history、再生経路への接続、
+または panel の確認完了として扱わない。
+後続ケースは契約を確定してから期待結果をテストへ追加する。
+panel 実装前の実機確認は、workflow Phase 5 に従って block / history をログで観測し、
+以下の panel 表示の手動スモークとは分けて記録する。
 
 手動スモークで確認する項目:
 1. 拡張を ON にして panel を開く。
 2. 再生中の字幕で current 行が切り替わることを確認する。
-3. 過去字幕が previous 側に積まれることを確認する。
-4. 未来字幕が next 側に表示されることを確認する。
+3. 過去字幕が past 側に積まれることを確認する。
+4. 未来字幕が future 側に表示されることを確認する。
 5. 数秒再生し、current / past / future が進行に合わせて自然に更新されることを確認する。
 6. secondary が一時的に欠ける区間がある場合、表示が過度に崩れないことを確認する。
 
@@ -677,7 +724,7 @@ small integration test で確認する項目:
 - 採用された secondary track 情報
 - current subtitle の内容
 - `SubtitleBlock[]` 件数
-- current / previous / next の件数
+- current の有無と past / future の件数
 - active session の識別情報
 - layout 状態
 - restart reason
@@ -713,7 +760,8 @@ small integration test で確認する項目:
 - secondary track:
 - current subtitle:
 - `SubtitleBlock[]` 件数:
-- current / previous / next 件数:
+- current の有無:
+- past / future 件数:
 - active session:
 - restart reason:
 - readiness:

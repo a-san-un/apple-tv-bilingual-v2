@@ -1037,14 +1037,57 @@ function attachNativeMenuSync(args: {
 
 ### `subtitle-block-builder.ts`
 
-primary / secondary の cue 群から `SubtitleBlock[]` を構築する。
+primary / secondary の cue 配列から `SubtitleBlock[]` を構築する純関数とする。
+共通型は §18、truth の原則は §11 を参照する。
 
-入力境界は、source 全体の `SubtitleSourceSnapshot`、
-またはそこから取り出した両言語の cue 配列とする。
-`SubtitleCueSnapshot` は cue 1 件分であり、両言語の配列全体を表す型として使わない。
+```ts
+function buildSubtitleBlocks(
+  primaryCues: readonly SubtitleCueSnapshot[],
+  secondaryCues: readonly SubtitleCueSnapshot[],
+): SubtitleBlock[];
+```
 
-入力の具体的な形は、source と builder の責務境界に基づいて定義し、公開 API を本節に記載する。
-renderer や panel の都合、DOM 操作、source の listener 所有は持ち込まない。
+#### 入力と責務境界
+
+- 呼び出し側が `SubtitleSourceSnapshot` から取り出した両言語の cue 配列を渡す
+- source 全体、source のインスタンス、video、現在の再生時刻は受け取らない
+- `SubtitleCueSnapshot` は cue 1 件分の型として使う
+- cue の `startTime`、`endTime`、`text` を読み、配列の引数で primary / secondary の役割を区別する
+- cue の track 管理情報や実 `TextTrack` の状態は読まない
+- 入力配列と各 cue を変更せず、新しい配列と block オブジェクトを返す
+- 戻り値には cue や track の参照を含めず、現行の `SubtitleBlock` の時刻・本文だけを持たせる
+- id / key、内部状態、キャッシュ、listener、timer、observer は追加しない
+- renderer や panel の都合、DOM 操作、source の取得・購読・cleanup は持ち込まない
+
+#### 最初の実装単位で確定するケース
+
+以下の有効な入力を、最初の実装・unit test の対象とする。
+非空のケースでは、開始・終了時刻は有限で `0 <= startTime < endTime`、
+本文は空でない文字列とする。
+
+| 入力 | 戻り値 |
+|---|---|
+| primary / secondary とも空 | 空の `SubtitleBlock[]` |
+| primary のみ1件、secondary は空 | primary の時刻範囲と本文を持ち、`secondaryText: null` の1 block |
+| primary / secondary が各1件で、開始・終了時刻がそれぞれ完全に一致 | 共通の時刻範囲と両言語の本文を持つ1 block |
+
+この実装単位では、時刻と本文を入力値のまま使う。
+時刻の丸め、許容誤差、本文の trim・結合・補完は行わない。
+
+#### 後続の実装単位で決める契約
+
+- 複数 cue の表示順と対応づけ
+- primary / secondary の時刻ずれ、部分的な重なり、境界だけが接する場合
+- 同一役割内で重複・重なりがある場合
+- primary が空で secondary だけがある場合
+- 空本文・空白だけの本文、不正な時刻範囲、非有限の時刻の扱い
+
+上記は未確定の契約であり、無視・補正・例外・空配列への変換を
+この時点で暗黙に仕様化しない。
+各ケースの契約とテストを追加してから実装範囲を広げる。
+
+最小3ケースの成功だけで builder 全体を完成扱いにしない。
+history、再生経路への接続、panel は、この最初の実装単位に含めない。
 
 ### `subtitle-history.ts`
 

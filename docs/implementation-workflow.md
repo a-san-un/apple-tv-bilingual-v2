@@ -787,10 +787,15 @@ const isSubtitleReady = (video: HTMLVideoElement): boolean =>
 
 - resolver と source の接続処理をまとめる
 - source を生成し、購読してから bind する
+- readiness 成立後も、textTracks の addtrack / removetrack に応じて resolver で採用 track を再選定する
+- 未取得 track の cue 読込みを再生イベントと cuechange で再確認する
+- 同じ採用 track の組み合わせなら、不要な再 bind を行わない
 - 採用結果と cue 件数をログで観測する
+- source、その購読、track 一覧と video の再生イベントの監視を所有する
 - lifecycle が保持・実行する Disposable を返す
 - 初期化途中の失敗でも、作成済み資源の cleanup を試す
-- source の内部処理や listener の直接解除を重複実装しない
+- source の内部処理や cue listener の直接解除を重複実装しない
+- native menu 操作後の自動同期は、この track 一覧の追加・削除への追従とは区別する
 
 #### `src/content/session-lifecycle.ts`
 
@@ -823,7 +828,7 @@ readiness 待機と retry の実装を index へ移さない。
 5. 関連自動テストと build を通す
 6. 正本文書と実装の配置・API・owner を照合する
 7. entry 固有の回帰確認と Apple TV+ 実機確認を行う
-8. 検証用フラグを戻し、結果と未確認事項を記録する
+8. 実機確認用フラグの使用状態、結果と未確認事項を記録する。フラグを戻す時期は「実機確認用フラグ」に従う
 
 ### テストファイルの分割
 
@@ -837,25 +842,36 @@ readiness 待機と retry の実装を index へ移さない。
 
 ### 実機確認用フラグ
 
-正式な ON/OFF UI の接続前は、
-index の DEBUG_AUTO_ENABLE_SUBTITLES を開発用の起動手段として使う。
+`src/content/index.ts` の次の2つを、開発中の実機確認に使う。
+役割と維持期限は別々に扱う。
 
-- 既定値は false とし、通常起動は OFF / closed を維持する
-- true はローカルの実機確認時にだけ使う
-- true でも保存設定が ready でなければ字幕接続を開始しない
-- フラグを storage に保存しない
+#### 自動 ON：`DEBUG_AUTO_ENABLE_SUBTITLES`
+
+- 正式な ON/OFF toggle を実装するまでは true を維持し、後続 Phase の実機確認にも使う
+- 保存設定が ready の場合だけ、起動時に extension enabled state を true にする
+- panel を開くフラグではない
 - 正式な ON/OFF toggle の実装・検証完了とは扱わない
-- 実機確認後は false に戻し、再 build と通常起動の確認を行う
+- 実機確認のたびに false へ戻す必要はない
+- 正式な ON/OFF toggle の実装時に false に戻し、toggle による開始・停止と通常起動を検証する
+
+#### 診断表示：`DEBUG_SESSION_BADGE`
+
+- リリースまでは true を維持し、session と字幕取得の診断表示に使う
+- 自動 ON とは独立したフラグであり、診断表示だけで拡張を ON にしない
+- リリース前に false にし、診断表示なしの動作を検証する
+
+両フラグとも storage に保存しない。
+通常起動を OFF / closed とする製品仕様は変更せず、
+開発中の自動 ON を暫定的な起動手段として区別する。
 
 build、拡張再読み込み、ページ再読み込みの具体的手順は、
-testing-checklist の Phase 4 を参照する。
+`testing-checklist.md` の「実行前提 > 手動スモーク前の準備」を参照する。
 
 ### 今回の最小接続に含めないもの
 
 - SubtitleBlock[] と history
 - panel、layout、正式な ON/OFF UI
 - native menu 操作後の自動同期
-- readiness 成立後の track 追加に対する自動再解決
 - popup 保存後の設定自動再読込
 
 対象外の機能は未対応として記録し、仕様上の要件を取り消さない。
@@ -884,7 +900,7 @@ testing-checklist の Phase 4 を参照する。
 - entry 接続後に typecheck、lint、全テスト、build
 - entry の起動条件、同一 target 再評価、pagehide cleanup を回帰確認する
 - Apple TV+ で track 採用、bind、cue 取得、停止時解除を確認する
-- 検証用フラグを false に戻した状態も確認する
+- 実機確認用フラグの使用状態を記録し、各フラグを false にする時期に無効化後の動作も確認する
 
 module テストの成功だけで、entry の分岐や実機動作を確認済みと扱わない。
 実行結果と未確認事項は testing-checklist に記録する。
@@ -908,15 +924,18 @@ module テストの成功だけで、entry の分岐や実機動作を確認済�
 
 #### `src/subtitles/subtitle-block-builder.ts`
 
-- cue / track 情報から `SubtitleBlock[]` を構築する
+- cue snapshot から `SubtitleBlock[]` を構築する
 - primary / secondary を時刻単位で対応づける
 - UI 向けの見た目都合ではなく、truth を返すことに集中する
-- block の id、time range、text の欠損時ルールをここで整理する
+- block の時刻範囲と本文の欠損時ルールを整理する
+- 現行の `SubtitleBlock` に id / key は追加しない
+- 入力境界と対応づけの契約は、minimal-panel-architecture の builder API 境界を正本とする
 
 #### `src/subtitles/subtitle-history.ts`
 
-- `SubtitleBlock[]` と current time から `SubtitleHistoryView` を返す
-- current / previous / next の切り出しロジックを pure に保つ
+- `SubtitleBlock[]` と current time から、現行の共通型 `SubtitleHistorySnapshot` を返す
+- current / past / future の導出ロジックを pure に保つ
+- `SubtitleHistoryView` は既存の別名として維持し、新しい型や別名は追加しない
 - renderer が source に触れなくても済む境界を作る
 
 ### 完了条件
