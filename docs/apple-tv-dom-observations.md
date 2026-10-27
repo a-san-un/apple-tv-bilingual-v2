@@ -492,3 +492,33 @@ dialog.playback-view
 - panel host は `dialog.playback-view` 配下に置く。
 - その具体的な子要素は Phase 6 の panel 実装時に再確認する。
 - `[data-testid="video-player-content"]` は panel host 候補、`[data-testid="video-container"]` は layout 計算の基準候補であり、この時点では最終決定ではない。
+
+## 2026-10-27: 同時刻の英語cue断片とblock分割
+
+### 観測条件
+
+- ユーザーがApple TV+ページのDevToolsで取得し、本会話に貼り付けた比較ログを確認した。作品名は未記録。
+- 再生時刻: 561.034888秒、paused:true、seeking:false。拡張のblockCountは391。
+- 日本語: index 79、subtitles、ja、showing、読込み済み372cue。
+- 英語: index 274、captions、en、hidden、読込み済み57cue。
+- track indexはこの観測時点の値であり、永続識別子ではない。
+
+### 観測結果
+
+| 英語のactive cue本文 | startTime | endTime |
+|---|---:|---:|
+| `<c.white.bg_black>No. And besides,</c>` | 558.9016666666666 | 561.8427 |
+| `I thought you were` | 558.9016666666666 | 561.8427 |
+| `on top of the DNA?` | 558.9016666666666 | 561.8427 |
+
+- 3件は開始・終了が完全一致し、activeCuesと再生時刻を含むcueの両方で上記の順に出力された。
+- 日本語のactive cueは559.0591666666667〜561.8111666666666秒で、本文は「それに 採取は」＋改行＋「お前の担当だろ？」だった。
+- 拡張currentは最初の英語2断片と日本語を持ち、同じ開始・終了時刻のnextに英語の最後の断片が入り、secondaryTextはnullだった。
+- 英語本文のcタグ、日本語の別のcueのrubyタグがログ本文に残ることも確認した。タグの描画方針の確定・実装とは区別する。
+
+### 限界と実装判断の参照先
+
+- この比較ログは全cue配列を保存していないため、builder入力全体での連続位置はこの記録だけでは確定しない。
+- 同時刻の分割がすべての作品・trackで発生するとは断定しない。
+- 同時刻正規化と後続評価の仕様は、minimal-panel-architectureのbuilder APIを正本とする。
+- 本記録は変更前の実機観測であり、正規化の実装・テスト・変更後の実機確認が完了したことを示さない。

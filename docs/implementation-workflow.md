@@ -915,19 +915,52 @@ module テストの成功だけで、entry の分岐や実機動作を確認済�
 ### 触るファイル
 
 - `src/subtitles/subtitle-block-builder.ts`
+- `src/subtitles/subtitle-block-builder.test.ts`
 - `src/subtitles/subtitle-block-candidates.ts`
 - `src/subtitles/subtitle-block-candidates.test.ts`
 - `src/subtitles/subtitle-history.ts`
 - `src/shared/types.ts`
 - `src/subtitles/subtitle-source.ts`
+- `src/subtitles/subtitle-session.ts`
+- `src/subtitles/subtitle-session.test.ts`
+- `src/content/session-lifecycle.ts`
+- `src/content/session-lifecycle.test.ts`
+- `src/content/debug-subtitle-log.ts`
+- `src/content/debug-subtitle-log.test.ts`
+- `src/content/index.ts`
+- `src/content/index.test.ts`
 - 必要なら `src/shared/log.ts`
 
 ### ファイル単位の作業内容
 
+#### `src/subtitles/subtitle-session.ts`
+
+- source 更新を builder・history へ接続し、結果の保持・取得境界・解放を所有する
+- 通常の時刻更新・seek は保持済み truth から history だけを再計算する
+- 初回bind・source更新・track切替・入力違反後の復帰・cleanupを同テストで確認する
+- 診断の取得回数と、truth 構築に必要な cue 取得・時刻読取りを区別して検証する
+- データ取得境界と例外処理・cleanup の規則は architecture の session 仕様を参照する
+
+#### 開発用の字幕データ観測
+
+- `src/content/debug-subtitle-log.ts` は lifecycle の公開取得・購読 API だけを使い、block / history の要約を既存の subtitle logger の info で出力する
+- `src/content/index.ts` は `DEBUG_SUBTITLE_SNAPSHOT_LOG` と配線だけを持ち、観測の dispose を top-level bag に登録する
+- フラグは実機確認中は true、通常利用・配布前は false とし、storage に保存しない。変更後は再 build・拡張とページの再読み込みを行う
+- 出力内容・観測手順は testing-checklist の「再生経路への接続の確認」を参照する
+- 同テストで無効時の購読・取得抑制、要約の重複抑制、取得失敗後の復帰、解除後の残存 callback を確認する
+- entry の同テストで接続と lifecycle より先の cleanup を確認する
+
+#### `src/content/session-lifecycle.ts`
+
+- 字幕接続のデータ取得と更新通知を、状態購読・診断観測と分離して中継する
+- 初回接続・更新・旧接続のクリア、旧 callback の無効化、通知中の停止・再開始を同テストで確認する
+- snapshot の取得境界と cleanup 契約は architecture の lifecycle API を参照する
+
 #### `src/subtitles/subtitle-block-builder.ts`
 
-- cue snapshot から `SubtitleBlock[]` を構築する
-- primary / secondary を時刻単位で対応づける
+- 生 cue 全件の入力検証、完全重複除去、同時刻正規化、対応づけ、block 出力の順に処理する
+- 同時刻正規化と後続評価の規則は、architecture の builder API 境界を正本とする
+- 生 cue の公開型は維持し、内部表現・変数名・コメント・同テストの意味を正規化単位へ合わせる
 - UI 向けの見た目都合ではなく、truth を返すことに集中する
 - block の時刻範囲と本文の欠損時ルールを整理する
 - 現行の `SubtitleBlock` に id / key は追加しない
@@ -935,8 +968,8 @@ module テストの成功だけで、entry の分岐や実機動作を確認済�
 
 #### `src/subtitles/subtitle-block-candidates.ts`
 
-- builder 内部の補助として、検証・重複除去済みの cue から対応候補と点数を生成する
-- 候補の採用・cue の消費・block 出力は行わない
+- builder 内部の補助として、検証・完全重複除去・同時刻正規化済みの単位から対応候補と点数を生成する
+- 候補の採用・単位の消費・block 出力・同時刻正規化は行わない
 - 同テストで重なり率・空白率の境界、隣接条件、件数制限、元の入力位置、入力不変性を確認する
 - 内部境界と候補条件は minimal-panel-architecture の builder 仕様を参照する
 
@@ -958,6 +991,10 @@ module テストの成功だけで、entry の分岐や実機動作を確認済�
 
 - 実装直後に typecheck、lint
 - `subtitle-block-builder.ts` と `subtitle-history.ts` の unit test を追加
+- 同時刻正規化の境界・多数件・片言語・重複・順序・本文保持を同テストで確認する
+- 単位ベースの候補点数・同点比較・消費を確認する
+- 実機の英語3断片を固定した回帰入力で、英語全文が同時刻の別blockへ分離せずcurrentへ渡ることを確認する
+- 正規化条件外の同時刻blockと、時刻の異なる3単位以上の扱いは既存規則を維持する
 - 時刻ずれ、secondary 欠損、track 切替前後の最低限ケースを test する
 - panel 実装へ入る前に、実機で block が組めているかをログで確認する
 

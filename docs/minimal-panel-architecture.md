@@ -167,6 +167,8 @@ src/
 ├─ subtitles/
 │  ├─ subtitle-source.ts
 │  │  └─ 字幕取得と track binding の統一窓口
+│  ├─ subtitle-session.ts
+│  │  └─ resolver・source・truth・history の接続と、そのruntime結果・監視・cleanupを所有する
 │  ├─ text-track-resolver.ts
 │  │  └─ TextTrack を正規化し、primary / secondary 採用判定を行う
 │  ├─ native-menu-sync.ts
@@ -232,6 +234,14 @@ src/
 
 ここでは字幕判定、cue 対応付け、panel DOM 更新、readiness 待機、retry / polling、restart request の収束を実装しない。
 
+### `src/content/debug-subtitle-log.ts`
+
+- 開発時だけ、lifecycle の字幕 snapshot 取得・更新購読を Console ログへ接続する
+- source・video・DOM を直接読まず、truth 構築や UI 描画を行わない
+- 購読と重複抑制用の要約文字列だけを所有し、全 snapshot は保持しない
+- 起動の配線と dispose 保持は content coordinator の top-level bag が所有する
+- 無効時は購読も snapshot 取得も行わない。運用・検証手順は workflow と testing-checklist を参照する
+
 ### `src/content/playback-root.ts`
 
 Apple TV+ 固有の再生対象を解決する discovery module とする。
@@ -271,6 +281,18 @@ playback session の唯一の owner とする。
 
 `playback-root.ts` が返した target と video を受け取り、同じ video に対する readiness 待機を維持する。  
 readiness 待機中に video identity が変わった場合は、古い待機を dispose し、新しい video に対して待機を最初からやり直す。
+
+### `src/subtitles/subtitle-session.ts`
+
+字幕接続と、その接続に対応する runtime の `SubtitleBlock[]`・history の owner とする。
+source 更新時は snapshot を builder へ渡し、構築した truth から history を導出する。
+通常の再生時刻更新と seek では、保持済み truth から history だけを再計算する。
+診断 callback やログ出力レベルを、truth 構築の有効条件にしない。
+入力条件違反では該当更新の block・history を空にし、予期しない例外は区別して記録・再送出する。
+不正な再生時刻では history を空にし、有効な truth は保持して時刻正常化後に再導出する。
+source・track 一覧・video イベントの監視は既存の dispose bag が所有する。
+dispose 開始時に保持データを解放し、解除失敗時に残った旧イベントも無効化する。
+構築・導出アルゴリズムは builder・history の純関数へ委譲し、DOM は扱わない。
 
 ### `src/subtitles/subtitle-source.ts`
 
@@ -1073,6 +1095,26 @@ function createSubtitleSource(
 - dispose 後は bind と新規購読を受け付けず、通知もしない。
 - source は session 単位で生成し、session owner が dispose を保持・実行する。
 
+### `subtitle-session.ts`
+
+`createSubtitleSession(options)` は `dispose()`・`getSnapshot()`・`subscribe(listener)` を提供する。
+取得結果は `{ blocks: SubtitleBlock[], history: SubtitleHistorySnapshot }` とし、
+cue・track・video の参照を含めない。配列と block をコピーし、取得結果の変更を内部へ伝えない。
+同じ取得結果内では history の各 block と blocks の対応する要素を共有する。
+取得時に source の再読込みや再構築は行わず、最後の更新結果を返す。
+dispose 後の取得結果は、空の blocks と current:null・past/future が空の history とする。
+診断専用の `onObservation` は、このデータ取得境界とは分離する。
+
+`subscribe(listener: () => void): DisposeFn` は、データ更新後に引数なしで通知する。
+登録時の即時通知はせず、初期データは `getSnapshot()` で取得する。
+成功した再構築・時刻更新と、失敗による保持結果のクリアを通知対象とする。
+同じ結果になる更新も通知でき、購読だけでは snapshot コピーや source 再読込みを行わない。
+解除は登録単位で冪等に行い、通知中に解除された登録は呼ばず、新しい登録は次の更新から対象とする。
+通知中の再入で更新世代が変わった場合は、旧更新の後続通知を打ち切る。
+購読者の例外は記録して後続通知を継続し、入力条件違反とは混同しない。
+dispose 開始時に購読者を解放し、最終通知は行わない。dispose 後の新規購読は無効とする。
+
+
 ### `native-menu-sync.ts`
 
 ```ts
@@ -1113,9 +1155,9 @@ function buildSubtitleBlocks(
 #### 候補生成の内部境界
 
 `subtitle-block-candidates.ts` の `generateSubtitleCandidates(primary, secondary)` は、
-開始時刻順で入力検証・完全重複除去済みの `readonly IndexedCue[]` を受け取る。
+開始時刻順で入力検証・完全重複除去・同時刻正規化済みの `readonly NormalizedSubtitleUnit[]` を受け取る。
 以下の対応候補・結合条件・点数規則に従って新しい候補配列を返す。
-入力の検証と重複除去は builder、系列全体での採用判断と block 出力も builder の責務とする。
+入力の検証・完全重複除去・同時刻正規化は builder、系列全体での採用判断と block 出力も builder の責務とする。
 内部型と候補配列は source・renderer との公開境界や新たな truth にしない。
 
 builder の内部補助関数 `selectSubtitleCandidates(candidates)` は、
@@ -1157,7 +1199,8 @@ primary は学習言語、secondary は母国語を表す。
 | 本文の保持 | 空白だけかどうかの検証と、出力本文の加工を区別する。有効な本文は trim しない |
 | 入力の不変性 | 入力配列と各 cue を変更しない |
 
-入力条件を検証したうえで、完全重複の除去と対応候補の比較を行う。
+生 cue 全件の入力条件を検証したうえで、完全重複除去、同時刻正規化、対応候補の比較、block 出力の順に処理する。
+正規化によって、不正な入力の除外や補正を行わない。
 入力順は非同期処理の完了順ではなく、各言語の入力配列内の順序を指す。
 
 ##### 完全重複の除去
@@ -1166,38 +1209,68 @@ primary は学習言語、secondary は母国語を表す。
 |---|---|
 | 除去する条件 | 同じ言語内で startTime・endTime・text がすべて一致する cue |
 | 残すもの | 元の入力順で最初の1件 |
-| 実施時点 | 対応候補の比較前 |
+| 実施時点 | 同時刻正規化の前 |
 | 順序 | 除去後も残った cue の入力順を維持する |
 | 本文比較 | 空白・改行差を正規化して同一視しない |
 | 除去しないもの | 異なる時刻の同一本文、異なる本文、異なる言語の同一本文 |
 
-候補の評価に使う cue 数は、完全重複を除去した後の cue 数とする。
+完全重複の判定は生 cue に対して行う。同時刻正規化後には重複除去を再実行しない。
 結合後に同じ言葉が繰り返されても、それだけを理由に本文を削除しない。
+候補の評価に使う件数は、後述の正規化単位の数とする。
+
+##### 連続した同時刻 cue の正規化
+
+| 項目 | 仕様 |
+|---|---|
+| 対象 | primary / secondary を別々に処理する |
+| 条件 | 完全重複除去後の配列で連続し、startTime と endTime がそれぞれ完全一致する cue |
+| 件数 | 条件が続く最大の連続区間を、件数上限なしで1単位にする。1件ならそのまま1単位とする |
+| 本文 | 入力順に改行文字 `\n` で連結し、各 cue の空白・改行・タグを保持する |
+| 時刻 | 区間内で共通の startTime / endTime をそのまま使う |
+| 区切り | 開始または終了が異なる cue に達したら区切る。離れた同時刻 cue を集めず、並べ替えない |
+| 精度 | 許容誤差、時刻の丸め・補正を導入しない |
+| 元の位置 | 単位内の先頭 cue の元の inputIndex を保持する |
+| 独立性 | 入力を変更せず、新しい内部データを作る。cue・track の参照や資源は保持しない |
+| 他言語がない場合 | 対応相手の有無にかかわらず正規化する |
+
+この処理後の内部表現を「正規化単位」と呼ぶ。内部型は `NormalizedSubtitleUnit` とし、
+startTime・endTime・連結済み text・先頭の inputIndex を持つ。
+公開の `SubtitleCueSnapshot` と `SubtitleBlock` は変更しない。
+
+連続性は、完全重複除去後の配列を基準に判定する。
+たとえば、除去によって同時刻の cue が隣接した場合も正規化の対象となる。
+
+- A(10,12)、B(10,13)、C(10,12) は A → B → C のままとする。
+- A(10,12)、B(10,12)、C(10,13) は AB → C とする。
+- 同じ開始・終了時刻の cue が何件連続していても、同じ規則で1単位にする。
+
+以降の対応候補、隣接、件数、消費、未対応出力は、
+正規化単位を基準とし、生 cue の断片数を使わない。
+
 
 ##### 対応候補と結合条件
 
 | 項目 | 仕様 |
 |---|---|
-| 対応の組み合わせ | 1対1・1対2・2対1 |
-| 同言語の2件 | 重複除去後の配列で隣接する2件だけを対象とする |
-| 非重複の隣接2件 | 空白率10%以下なら結合候補とする |
-| 重なる隣接2件 | 結合候補として比較する |
-| 結合の扱い | 候補として比較するだけで、強制結合しない |
-| 結合上限 | 同じ言語の3件以上への連鎖結合を行わない |
-| 結合相手なし | 対応に採用されなければ、元の cue ごとに片言語 block として残す |
-| 再利用 | 同じ cue を複数の対応に使わない |
-| 順序 | 両言語の入力順を維持し、対応を交差させない |
-| 対応相手なし | primary / secondary のどちらも片言語 block として残す |
+| 対応の組み合わせ | 正規化単位で1対1・1対2・2対1 |
+| 同言語の2単位 | 正規化後の配列で隣接する2単位だけを対象とする |
+| 非重複の隣接2単位 | 空白率10%以下なら結合候補とする |
+| 重なる隣接2単位 | 結合候補として比較する |
+| 結合の扱い | 正規化後の2単位の結合は候補として比較し、強制しない。同時刻正規化とは区別する |
+| 結合上限 | 同じ言語の3単位以上への連鎖結合は行わない。各単位に含まれる生 cue 数は制限しない |
+| 未対応 | 対応に採用されなければ、primary / secondary とも正規化単位ごとに片言語 block として残す |
+| 再利用 | 同じ正規化単位を複数の対応に使わない |
+| 順序 | 両言語の正規化単位の入力順を維持し、対応を交差させない |
 
-2件を結合候補として評価するときの時間範囲は、
-対象 cue の最小開始時刻から最大終了時刻までとする。
-この範囲には、2件の間にある空白も含める。
+2単位を結合候補として評価するときの時間範囲は、
+対象単位の最小開始時刻から最大終了時刻までとする。
+この範囲には、2単位の間にある空白も含める。
 
 ##### 重なり率と空白率
 
 primary 側の候補範囲を `[pStart, pEnd)`、
 secondary 側の候補範囲を `[sStart, sEnd)` とする。
-各候補範囲は1件、または結合候補の2件から求める。
+各候補範囲は1単位、または結合候補の2単位から求める。
 
 ```text
 overlap = max(0, min(pEnd, sEnd) - max(pStart, sStart))
@@ -1208,7 +1281,7 @@ overlapRatio = overlap / span
 `overlapRatio >= 0.60` の組み合わせを対応候補とする。
 境界だけが接する場合は overlap が0なので、対応候補としない。
 
-同じ言語の開始時刻順の隣接2件を、
+同じ言語の開始時刻順の隣接2単位を、
 `[aStart, aEnd)`、`[bStart, bEnd)` とする。
 
 ```text
@@ -1217,21 +1290,28 @@ span = max(aEnd, bEnd) - aStart
 gapRatio = gap / span
 ```
 
-重なっていない2件では、`gapRatio <= 0.10` を結合候補条件とする。
-空白が0の隣接2件も含む。
-重なる2件は、前項の重なりを持つ隣接2件の規則で扱う。
+重なっていない2単位では、`gapRatio <= 0.10` を結合候補条件とする。
+空白が0の隣接2単位も含む。
+重なる2単位は、前項の重なりを持つ隣接2単位の規則で扱う。
 
 ##### 候補点数と全体評価
 
 ```text
-candidateScore = (overlapRatio - 0.60) * matchedCueCount
+candidateScore = (overlapRatio - 0.60) * matchedUnitCount
 ```
 
-| 組み合わせ | matchedCueCount |
+| 組み合わせ | matchedUnitCount |
 |---|---:|
 | 1対1 | 2 |
 | 1対2 | 3 |
 | 2対1 | 3 |
+
+matchedUnitCount は採用する正規化単位の総数とし、元の生 cue 数による重みは付けない。
+同時刻の英語5 cueを1単位にしたものと日本語1単位の対応は、1対1・2単位として評価する。
+同時刻正規化は確定した前処理であり、1対2・2対1の結合回数には数えない。
+候補の primaryCount / secondaryCount は正規化単位数、offset は正規化後の配列位置とする。
+隣接判定、採用列の交差・再利用防止、slice、消費済み管理、ループの前進には、この位置と単位数を使う。
+元の inputIndex を正規化後の配列添字として使用しない。
 
 再利用なし・順序維持を満たす対応の組み合わせの中から、
 candidateScore の合計が最大になるものを選ぶ。
@@ -1239,7 +1319,7 @@ candidateScore の合計が最大になるものを選ぶ。
 | 項目 | 仕様 |
 |---|---|
 | 評価範囲 | 各候補を局所的に即決せず、系列全体で評価する |
-| 未対応 cue | 点数は0。未対応への減点は付けない |
+| 未対応単位 | 点数は0。未対応への減点は付けない |
 | 候補条件 | 重なり率60%以上は候補になれる条件であり、採用を保証しない |
 | 結合の優先度 | 1対1の優先は合計点が同じ場合の規則であり、高得点の結合を一律に排除しない |
 
@@ -1251,7 +1331,7 @@ candidateScore の合計が最大になるものを選ぶ。
 |---|---|---|
 | 1 | 候補点数の合計 | 大きい方 |
 | 2 | 1対2・2対1の結合回数 | 少ない方 |
-| 3 | 対応づけされた cue 数 | 多い方 |
+| 3 | 対応づけされた正規化単位数 | 多い方 |
 | 4 | 対応リスト | 下記の辞書順で小さい方 |
 
 各対応を次の組で表し、対応を入力順に並べたリストを比較する。
@@ -1260,19 +1340,19 @@ candidateScore の合計が最大になるものを選ぶ。
 (
   primary の先頭入力位置,
   secondary の先頭入力位置,
-  primary の件数,
-  secondary の件数
+  primary の正規化単位数,
+  secondary の正規化単位数
 )
 ```
 
 先頭から比較し、最初に異なる数値が小さい方を選ぶ。
 入力位置には元の入力配列の位置を使い、
-完全重複を除去しても残した cue の元の入力位置を保持して比較する。
+完全重複除去・同時刻正規化後も、各単位の先頭 cue の元の入力位置を保持して比較する。
 この位置は builder 内部の比較にだけ使用し、block に id / key として出力しない。
 
 重なり率60%ちょうどの候補点数は0となる。
 
-- 60%の1対1と未対応が同点なら、結合回数も同じなので対応 cue 数により1対1を選ぶ。
+- 60%の1対1と未対応が同点なら、結合回数も同じなので対応単位数により1対1を選ぶ。
 - 60%の1対2・2対1は、ほかに利点がなければ結合回数の少ない未対応を選ぶ。
 
 ##### block の本文・欠損・時間範囲
@@ -1280,12 +1360,12 @@ candidateScore の合計が最大になるものを選ぶ。
 | 項目 | 仕様 |
 |---|---|
 | 本文の役割 | primaryText は学習言語、secondaryText は母国語 |
-| 本文結合 | 各言語の入力順に改行文字 `\n` でつなぐ |
+| 本文結合 | 単位内の本文を保持し、各言語の採用単位を入力順に改行文字 `\n` でつなぐ |
 | 元の本文 | 各 cue の空白・改行を保持する |
 | 欠損 | 存在しない言語側の本文を `null` とする |
 | 空の block | primaryText / secondaryText が両方 `null` の block は生成しない |
-| primary がある block の時刻 | primary 側の最小開始時刻と最大終了時刻 |
-| secondary のみの block の時刻 | secondary 側の開始時刻と終了時刻 |
+| primary がある block の時刻 | primaryの採用単位の最小開始時刻と最大終了時刻 |
+| secondary のみの block の時刻 | 未対応secondary単位の開始時刻と終了時刻 |
 | 各言語の独立した時刻 | block に別々の時間範囲として保持しない |
 | 戻り値 | 新しい配列と block オブジェクトを返す。cue・track の参照を含めない |
 
@@ -1296,12 +1376,12 @@ candidateScore の合計が最大になるものを選ぶ。
 
 | 項目 | 仕様 |
 |---|---|
-| 基本順 | primary の元の入力順を軸にする |
-| primary を含む block | primary の入力順を維持する |
-| primary 2件をまとめた block | 先頭の primary cue の位置に置く |
+| 基本順 | primaryの正規化単位の入力順を軸にする |
+| primary を含む block | primaryの正規化単位の入力順を維持する |
+| primary 2単位をまとめた block | 先頭primary単位の位置に置く |
 | secondary のみの block | secondary の開始時刻に従い、primary を軸にした並びへ挿入する |
 | 同じ開始時刻 | primary を含む block を先、secondary のみを後に置く |
-| secondary のみの block 同士 | secondary の元の入力順を維持する |
+| secondary のみの block 同士 | secondaryの正規化単位の入力順を維持する |
 | 並べ替えに使わないもの | 終了時刻、二言語か片言語かという種類の優先順位 |
 
 primary を含む block の開始時刻には primary 側の開始時刻を使う。
@@ -1309,7 +1389,7 @@ secondary のみの block は、開始時刻がそれより大きい
 最初の primary block の直前に挿入する。
 該当する primary block がなければ末尾に置く。
 
-primary が空の場合は、secondary の入力順で片言語 block を返す。
+primary が空の場合は、secondaryの正規化単位の入力順で片言語 block を返す。
 両言語が空の場合は、空の配列を返す。
 
 ##### 呼び出し側の例外処理
@@ -1465,6 +1545,8 @@ type SessionLifecycleOptions = {
 
 type SessionLifecycleController = {
   getState(): SessionState;
+  getSubtitleSnapshot(): SubtitleSessionSnapshot | null;
+  subscribeSubtitle(listener: () => void): DisposeFn;
   start(target: PlaybackTarget | null, reason?: RestartReason): void;
   stop(): void;
   dispose(): void;
@@ -1480,6 +1562,14 @@ function createSessionLifecycle(
 - 待機 bag は解除前に保持参照から切り離す。
 - 待機 cleanup の失敗は記録し、停止・再開始・破棄の後処理を継続する。
 - getState は state の外側と waiting 情報をコピーし、target と DOM 参照は共有する。
+- getSubtitleSnapshot は現在の字幕接続の getSnapshot に委譲する。接続なし・破棄後は null とし、接続中の空 snapshot と区別する。
+- lifecycle は字幕 truth や取得結果を保持・再コピーしない。データ境界は本節の subtitle-session API を参照する。
+- subscribeSubtitle は即時通知せず、接続後の初回・接続の更新・旧接続のクリアを引数なしで通知する。状態購読と診断観測とは分離する。
+- データ通知の購読者の例外は記録して後続を継続する。登録単位で冪等に解除し、通知中に解除した登録は呼ばず、新規登録は次の更新から扱う。
+- 接続解除前に参照を切り離し、世代を更新する。中継購読の解除から字幕接続の破棄の順にすべて試し、失敗は記録する。
+- 接続・データ通知の世代を確認し、旧 callback と、通知中の停止・再開始・新しい更新によって古くなった処理を継続しない。
+- controller の dispose では字幕データの購読者を解放し、最終通知を送らない。
+
 - dispose 後は新しい開始と購読を受け付けない。
 
 §12〜§13 は session 全体の接続・restart・cleanup の責務と順序を定義する。
