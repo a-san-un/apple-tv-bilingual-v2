@@ -284,6 +284,7 @@ listener 解除失敗時の確認は「cleanup、二重 listener、二重描画�
 
 対象ファイル:
 - `src/subtitles/subtitle-block-builder.ts`
+- `src/subtitles/subtitle-block-candidates.ts`
 - `src/subtitles/subtitle-history.ts`
 - `src/panel/panel-renderer.ts`
 - 再生経路への接続を担当する呼び出し側

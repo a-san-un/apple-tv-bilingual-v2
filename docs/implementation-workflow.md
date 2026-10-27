@@ -915,6 +915,8 @@ module テストの成功だけで、entry の分岐や実機動作を確認済�
 ### 触るファイル
 
 - `src/subtitles/subtitle-block-builder.ts`
+- `src/subtitles/subtitle-block-candidates.ts`
+- `src/subtitles/subtitle-block-candidates.test.ts`
 - `src/subtitles/subtitle-history.ts`
 - `src/shared/types.ts`
 - `src/subtitles/subtitle-source.ts`
@@ -930,6 +932,13 @@ module テストの成功だけで、entry の分岐や実機動作を確認済�
 - block の時刻範囲と本文の欠損時ルールを整理する
 - 現行の `SubtitleBlock` に id / key は追加しない
 - 入力境界と対応づけの契約は、minimal-panel-architecture の builder API 境界を正本とする
+
+#### `src/subtitles/subtitle-block-candidates.ts`
+
+- builder 内部の補助として、検証・重複除去済みの cue から対応候補と点数を生成する
+- 候補の採用・cue の消費・block 出力は行わない
+- 同テストで重なり率・空白率の境界、隣接条件、件数制限、元の入力位置、入力不変性を確認する
+- 内部境界と候補条件は minimal-panel-architecture の builder 仕様を参照する
 
 #### `src/subtitles/subtitle-history.ts`
 

@@ -173,6 +173,8 @@ src/
 │  │  └─ Apple TV+ ネイティブ字幕メニュー listener の attach / detach を扱う
 │  ├─ subtitle-block-builder.ts
 │  │  └─ primary / secondary cue から `SubtitleBlock[]` を構築する
+│  ├─ subtitle-block-candidates.ts
+│  │  └─ builder 内部の補助。検証・重複除去済みの cue から対応候補を生成する
 │  └─ subtitle-history.ts
 │     └─ `SubtitleBlock[]` から current / past / future を導出する view helper
 │
@@ -317,6 +319,16 @@ truth の正本を構築する。
 - UI に必要な最小単位へ正規化する
 
 この module の出力が panel 表示に対する唯一の truth である。
+
+### `src/subtitles/subtitle-block-candidates.ts`
+
+builder 内部の対応候補生成を担う純関数とする。
+検証・完全重複除去済みの cue を受け取り、1対1・1対2・2対1の候補と点数を返す。
+内部型 `IndexedCue` は時刻・本文・元の入力位置を持ち、cue・track の参照を含めない。
+候補には重複除去後の先頭位置・件数と元の先頭入力位置を保持する。
+候補の採用・cue の消費・block の生成・source 制御・DOM 操作は行わない。
+builder からこの補助 module への一方向の依存とし、逆方向には依存しない。
+
 
 ### `src/subtitles/subtitle-history.ts`
 
@@ -1097,6 +1109,21 @@ function buildSubtitleBlocks(
 - 戻り値には cue や track の参照を含めず、現行の `SubtitleBlock` の時刻・本文だけを持たせる
 - id / key、内部状態、キャッシュ、listener、timer、observer は追加しない
 - renderer や panel の都合、DOM 操作、source の取得・購読・cleanup は持ち込まない
+
+#### 候補生成の内部境界
+
+`subtitle-block-candidates.ts` の `generateSubtitleCandidates(primary, secondary)` は、
+開始時刻順で入力検証・完全重複除去済みの `readonly IndexedCue[]` を受け取る。
+以下の対応候補・結合条件・点数規則に従って新しい候補配列を返す。
+入力の検証と重複除去は builder、系列全体での採用判断と block 出力も builder の責務とする。
+内部型と候補配列は source・renderer との公開境界や新たな truth にしない。
+
+builder の内部補助関数 `selectSubtitleCandidates(candidates)` は、
+候補生成済みの `readonly SubtitleMatchCandidate[]` から採用候補を入力順に返す。
+採用判断には以下の全体評価・同点規則を適用し、元の配列と候補を変更しない。
+戻り値は新しい配列と候補オブジェクトとし、本文結合や block 出力は行わない。
+この関数の export は内部処理の単体検証用であり、source・renderer からの利用境界にはしない。
+
 
 #### 基本的な入出力例
 
