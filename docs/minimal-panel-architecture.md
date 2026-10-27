@@ -743,7 +743,6 @@ panel は右側字幕表示専用の UI とし、v2 の中心体験を担う。
 
 ### 表示の仕様
 
-以下は合意済みの実装仕様であり、記載だけで実装・検証済みと扱わない。
 block の本文・時間範囲・並びは §17 の `subtitle-block-builder.ts`、
 current / past / future の導出は同節の `subtitle-history.ts` を正本とする。
 panel 側で block の並べ替えや current の再選択を行わない。
@@ -1099,33 +1098,19 @@ function buildSubtitleBlocks(
 - id / key、内部状態、キャッシュ、listener、timer、observer は追加しない
 - renderer や panel の都合、DOM 操作、source の取得・購読・cleanup は持ち込まない
 
-#### 最初の実装単位で確定するケース
+#### 基本的な入出力例
 
-以下の有効な入力を、最初の実装・unit test の対象とする。
-非空のケースでは、開始・終了時刻は有限で `0 <= startTime < endTime`、
-本文は空または空白だけでない文字列とする。前後の空白や改行は出力時に保持する。
+以下は、有効な cue に対する基本的な入出力の例である。
+入力条件と複数 cue の対応づけは、後述の規則に従う。
 
 | 入力 | 戻り値 |
 |---|---|
 | primary / secondary とも空 | 空の `SubtitleBlock[]` |
 | primary のみ1件、secondary は空 | primary の時刻範囲と本文を持ち、`secondaryText: null` の1 block |
+| secondary のみ1件、primary は空 | secondary の時刻範囲と本文を持ち、`primaryText: null` の1 block |
 | primary / secondary が各1件で、開始・終了時刻がそれぞれ完全に一致 | 共通の時刻範囲と両言語の本文を持つ1 block |
 
-この実装単位では、時刻と本文を入力値のまま使う。
-時刻の丸め、許容誤差、本文の trim・結合・補完は行わない。
-
-#### 追加実装：母国語のみ1件
-
-最初の3ケースに加え、primary が空で secondary が有効な1件の場合も扱う。
-secondary の時刻範囲と本文をそのまま保持し、`primaryText: null` の1 block を返す。
-入力の有効条件・不変性・track 非参照は最初の実装単位と同じとする。
-複数 cue と両言語の時刻範囲不一致は、引き続き開発途中のガードで拒否する。
-以下の後続仕様全体を実装済みとするものではない。
-
-#### 後続実装の仕様
-
-以下は、合意済みの後続実装の仕様とする。
-現在の最小実装の対応範囲とは区別し、文書への記載だけで実装済みと扱わない。
+#### 対応づけと block 構築
 
 primary は学習言語、secondary は母国語を表す。
 重なり率60%、空白率10%、候補点数の評価方式は暫定採用とし、
@@ -1277,9 +1262,8 @@ candidateScore の合計が最大になるものを選ぶ。
 | 各言語の独立した時刻 | block に別々の時間範囲として保持しない |
 | 戻り値 | 新しい配列と block オブジェクトを返す。cue・track の参照を含めない |
 
-primaryText / secondaryText を対称な `string | null` とすることを仕様とする。
-現行の共通型からの変更は、利用先への影響を確認し、
-共通型の正本文書・コード・テストを同じ変更単位で更新する。
+`primaryText` / `secondaryText` は対称な `string | null` とし、
+欠けている言語の本文を `null` で表す。共通型の定義は §18 を参照する。
 
 ##### block の出力順
 
@@ -1310,29 +1294,13 @@ primary が空の場合は、secondary の入力順で片言語 block を返す�
 予期しない例外まで一括して握りつぶさない。
 例外処理や source の制御を builder 自身には持ち込まない。
 
-#### 現在の最小実装と段階的な拡張
-
-現在の最小実装は、前節の最小3ケースだけを扱う。
-後続実装の仕様を記載しただけで、対応範囲を実装済みと扱わない。
-
-最小実装では、最小3ケースに該当しない入力を `RangeError` で明示的に拒否する。
-複数 cue、時刻不一致、secondary のみ、非有限・負の時刻、終了が開始以下、
-空本文・空白だけの本文を対象外とし、無視・補正・空配列への変換は行わない。
-
-このガードには、開発途中の未対応入力の拒否が含まれる。
-完成版の入力条件違反とは区別する。
-各ケースの実装とテストを追加してから、対応範囲を広げてガードを見直す。
-
-最小3ケースの成功だけで builder 全体を完成扱いにしない。
-history、再生経路への接続、panel は、この最初の実装単位に含めない。
-
 ### `subtitle-history.ts`
 
 `SubtitleBlock[]` と現在の再生時刻から、current / past / future を導出する純関数とする。
 共通型は §18、block の時間範囲と出力順は前項の builder の仕様を参照する。
 
 ```ts
-// API の設計例。共通型は §18 を参照する。
+// 共通型は §18 を参照する。
 function deriveSubtitleHistory(
   blocks: SubtitleBlock[],
   currentTime: number,
@@ -1340,8 +1308,6 @@ function deriveSubtitleHistory(
 ```
 
 #### 再生位置からの導出仕様
-
-以下は合意済みの実装仕様であり、記載だけで実装・検証済みと扱わない。
 
 | 項目 | 仕様 |
 |---|---|
