@@ -289,28 +289,27 @@ listener 解除失敗時の確認は「cleanup、二重 listener、二重描画�
 - 再生経路への接続を担当する呼び出し側
 
 仕様の参照先:
-- builder の公開 API・最小ケース・後続実装の仕様は、`minimal-panel-architecture.md` §17 の `subtitle-block-builder.ts` を正本とする。
+- builder の公開 API・入力条件・対応づけ・出力規則は、`minimal-panel-architecture.md` §17 の `subtitle-block-builder.ts` を正本とする。
 - history の導出仕様と境界例は、同節の `subtitle-history.ts` を正本とする。
 - panel の表示・自動追従は、同文書の §14 を正本とする。
-- 共通型は同文書の §18 を参照する。後続の欠損表現への変更は、型・利用先・テストと合わせて確認する。
+- 共通型は同文書の §18 を参照し、両言語の本文型と `null` による欠損表現が一致することを確認する。
 
 以下は確認計画であり、項目の記載だけで実装・テスト実施済みと扱わない。
 仕様の数式・閾値は正本を参照し、ここでは確認する入力と期待動作を整理する。
 
-### 最初の builder 実装単位
+### builder の基本動作と責務境界
 
 - primary / secondary とも空なら、空の配列を返すこと。
 - primary のみ1件なら、その時刻・本文と `secondaryText: null` を持つ1 block を返すこと。
+- secondary のみ1件なら、その時刻・本文と `primaryText: null` を持つ1 block を返すこと。
 - 同じ開始・終了時刻の primary / secondary が各1件なら、二言語を持つ1 block を返すこと。
-- 最小ケースの時刻と本文を、丸め・trim・補完せずに返すこと。
+- 片言語1件と同時刻範囲の二言語各1件では、時刻と本文を丸め・trim・補完せずに返すこと。
 - 入力配列と各 cue を変更しないこと。
 - 呼び出しごとに新しい配列と block オブジェクトを返し、前の戻り値の変更が次の結果へ影響しないこと。
 - cue の track 管理情報や実 `TextTrack` の状態を読まないこと。
 - 戻り値に cue・track の参照や id / key を含めないこと。
-- 最小実装の対応範囲外の入力は `RangeError` で拒否すること。複数 cue、時刻不一致、secondary のみ、不正時刻、空本文・空白だけの本文を確認する。
-- 入力ガードを完成版の劣化動作の確認済みとして扱わないこと。
 
-### 後続の builder の自動テスト
+### builder の入力検証・対応づけ・出力
 
 | 分類 | 確認する内容 |
 |---|---|
@@ -356,8 +355,8 @@ listener 解除失敗時の確認は「cleanup、二重 listener、二重描画�
 | 予期しない例外 | 一括して握りつぶさない |
 | 責務境界 | 例外処理・source制御を builder / history に持ち込まない |
 
-最小ケースのテスト成功を、後続仕様、history、再生経路への接続、panel の確認完了として扱わない。
-対応範囲を広げるときは、新しい期待結果を追加し、最小実装だけに適用するガードのテストも見直す。
+builder の基本ケースだけでなく、対応づけ・欠損・出力順・入力条件違反をそれぞれ確認する。
+builder、history、再生経路への接続、panel の確認結果は区別して記録する。
 panel 実装前の実機確認は、workflow Phase 5 に従って block / history をログで観測し、
 以下の panel 表示の手動確認とは分けて記録する。
 
