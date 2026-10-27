@@ -105,10 +105,11 @@ export type SubtitleSourceListener = (change: SubtitleSourceChange) => void;
  * panel 表示の truth になる字幕表示単位。
  * UI は raw cue ではなく、この block 配列を正本として扱う。
  */
+/** 欠けている言語の本文は null。両側欠損の block は builder が生成しない。 */
 export type SubtitleBlock = {
   startTime: number;
   endTime: number;
-  primaryText: string;
+  primaryText: string | null;
   secondaryText: string | null;
 };
 

@@ -1114,6 +1114,14 @@ function buildSubtitleBlocks(
 この実装単位では、時刻と本文を入力値のまま使う。
 時刻の丸め、許容誤差、本文の trim・結合・補完は行わない。
 
+#### 追加実装：母国語のみ1件
+
+最初の3ケースに加え、primary が空で secondary が有効な1件の場合も扱う。
+secondary の時刻範囲と本文をそのまま保持し、`primaryText: null` の1 block を返す。
+入力の有効条件・不変性・track 非参照は最初の実装単位と同じとする。
+複数 cue と両言語の時刻範囲不一致は、引き続き開発途中のガードで拒否する。
+以下の後続仕様全体を実装済みとするものではない。
+
 #### 後続実装の仕様
 
 以下は、合意済みの後続実装の仕様とする。
@@ -1585,10 +1593,11 @@ export type SubtitleSourceChange =
 
 export type SubtitleSourceListener = (change: SubtitleSourceChange) => void;
 
+/** 欠けている言語の本文は null。両側欠損の block は builder が生成しない。 */
 export type SubtitleBlock = {
   startTime: number;
   endTime: number;
-  primaryText: string;
+  primaryText: string | null;
   secondaryText: string | null;
 };
 

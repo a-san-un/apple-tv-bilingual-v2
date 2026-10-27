@@ -1,11 +1,11 @@
 /**
  * subtitle-block-builder.test.ts
  *
- * 最小3ケース、コピー境界、track 非参照、開発途中の入力ガードを確認する。
+ * 最小4ケース、コピー境界、track 非参照、開発途中の入力ガードを確認する。
  * source や DOM を生成せず、純関数の契約だけを検証する。
  */
-import { describe, expect, it } from 'vitest';
-import type { SubtitleCueSnapshot } from '../shared/types';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { SubtitleBlock, SubtitleCueSnapshot } from '../shared/types';
 import { buildSubtitleBlocks } from './subtitle-block-builder';
 
 /**
@@ -100,7 +100,6 @@ describe('buildSubtitleBlocks の最小契約', () => {
   it.each([
     ['primary 複数', [cue(), cue()], []],
     ['secondary 複数', [cue()], [cue(), cue()]],
-    ['secondary のみ', [], [cue()]],
     ['開始時刻不一致', [cue()], [cue({ startTime: 1.2 })]],
     ['終了時刻不一致', [cue()], [cue({ endTime: 3 })]],
   ] as const)('%s を RangeError で拒否する', (_label, primary, secondary) => {
@@ -117,6 +116,54 @@ describe('buildSubtitleBlocks の最小契約', () => {
     { text: ' \n\t ' },
   ])('不正な時刻・本文 %j を両役割で拒否する', (overrides) => {
     expect(() => buildSubtitleBlocks([cue(overrides)], [])).toThrow(RangeError);
+    expect(() => buildSubtitleBlocks([], [cue(overrides)])).toThrow(RangeError);
     expect(() => buildSubtitleBlocks([cue()], [cue(overrides)])).toThrow(RangeError);
+  });
+});
+
+describe('SubtitleBlock の欠損表現', () => {
+  it('両言語の本文型は string | null とする', () => {
+    expectTypeOf<SubtitleBlock['primaryText']>().toEqualTypeOf<string | null>();
+    expectTypeOf<SubtitleBlock['secondaryText']>().toEqualTypeOf<string | null>();
+  });
+});
+
+describe('buildSubtitleBlocks の母国語のみの生成', () => {
+  it('母国語の時刻と空白・改行を保持し primaryText を null にする', () => {
+    expect(buildSubtitleBlocks([], [cue({ text: ' こんにちは\n ' })])).toEqual([{
+      startTime: 1.12345,
+      endTime: 2.98765,
+      primaryText: null,
+      secondaryText: ' こんにちは\n ',
+    }]);
+  });
+
+  it('凍結した入力を変更せず track を読まず呼び出しごとに新しい結果を返す', () => {
+    const secondary: SubtitleCueSnapshot = Object.freeze({
+      startTime: 0,
+      endTime: 1,
+      text: 'こんにちは',
+      get track(): null { throw new Error('track must not be read'); },
+    });
+    const inputs = Object.freeze([secondary]);
+    const first = buildSubtitleBlocks(Object.freeze([]), inputs);
+    const second = buildSubtitleBlocks([], inputs);
+    expect(first).toEqual([{
+      startTime: 0,
+      endTime: 1,
+      primaryText: null,
+      secondaryText: 'こんにちは',
+    }]);
+    expect(first).not.toBe(second);
+    expect(first[0]).not.toBe(second[0]);
+    const block = first[0];
+    if (block === undefined) throw new Error('Expected one block');
+    block.secondaryText = 'changed output';
+    expect(second[0]?.secondaryText).toBe('こんにちは');
+    expect(secondary.text).toBe('こんにちは');
+  });
+
+  it('母国語だけでも複数 cue はまだ受け付けない', () => {
+    expect(() => buildSubtitleBlocks([], [cue(), cue()])).toThrow(RangeError);
   });
 });
