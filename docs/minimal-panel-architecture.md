@@ -741,13 +741,53 @@ panel は右側字幕表示専用の UI とし、v2 の中心体験を担う。
 - panel の幅配分と layout state は `player-layout.ts` が持つ
 - panel 内で source 取得や track 解決は行わない
 
-panel が扱う表示内容は少なくとも次を想定する。
+### 表示の仕様
 
-- current
-- past
-- future
-- secondary unavailable などの補助表示
-- extension OFF 時または panel close 時の非表示状態
+以下は合意済みの実装仕様であり、記載だけで実装・検証済みと扱わない。
+block の本文・時間範囲・並びは §17 の `subtitle-block-builder.ts`、
+current / past / future の導出は同節の `subtitle-history.ts` を正本とする。
+panel 側で block の並べ替えや current の再選択を行わない。
+
+| 項目 | 仕様 |
+|---|---|
+| 言語の上下 | 学習言語を上、母国語を下に表示する |
+| 本文 | block 内の本文と改行を維持して表示する |
+| 片言語 block | 存在する側に本文を表示し、欠けている言語側も空行を1行確保する |
+| 言語領域 | 片言語でも、もう片方の言語領域へ本文を移さない |
+| 表示順 | history の past、current、future を元の block 順に表示する。current が null の場合も future を表示対象とする |
+| current | 再生位置を代表する1 block として強調する |
+| 非選択の block | current でないことや終了時刻を過ぎたことを理由に、表示対象から取り除かない |
+| 表示範囲 | 表示対象として残ることと、スクロール領域内で常に見えることは区別する |
+| 未取得の字幕 | truth にまだ存在しない字幕を補完して表示しない |
+| 補助表示 | secondary unavailable などの補助情報を必要に応じて表示する |
+| 非表示 | extension OFF または panel close 時は非表示にする |
+
+### 自動スクロールの仕様
+
+自動追従は、current を表示範囲に案内するための処理とする。
+current の選択規則や block の順序を変更せず、全行を順番に強調するための処理は加えない。
+
+| 状況 | 仕様 |
+|---|---|
+| 表示範囲内の進行 | current 全体が表示範囲に収まる間は、強調だけを進め、自動スクロールしない |
+| 下端で収まらなくなる | 新しい current 全体が表示範囲に収まらなくなったら、その block の上端を表示範囲の上端へ合わせる |
+| スクロールの動き | 初期版はアニメーションを付けず、位置を切り替える |
+| 手動スクロール | ユーザーのスクロール操作で自動追従を停止する。current の計算・強調は継続する |
+| 操作の判定 | 単なる scroll イベントだけで追従停止を判定しない。自動スクロール自身で追従停止しないよう区別する |
+| 現在位置に戻る | 「現在位置に戻る」操作で current を上端へ表示し、自動追従を再開する。current がなければ先頭へ移動する |
+| 追従中の seek | seek 先の current を上端へ表示する。current がなければ先頭へ移動する |
+| 追従停止中の seek | 停止を維持する。強調を更新し、閲覧位置を勝手に移動しない |
+| panel の再表示 | current を上端へ表示して自動追従を再開する。current がなければ先頭へ移動する |
+| source 更新後・追従中 | 再計算された history に通常の追従規則を適用する。current がなくなった場合は先頭へ移動する |
+| source 更新後・追従停止中 | 自動スクロールせず、閲覧位置を可能な範囲で維持する |
+| 表示範囲より高い block | 上端を合わせるだけとし、収まらないことを理由に繰り返しスクロールしない |
+| 末尾で上端へ揃えられない場合 | 最大スクロール位置まで移動する。上端合わせ用の余白を追加しない |
+
+source 更新後の表示は、外部から渡された truth / history に従う。
+panel 自身が source を購読したり、source や TextTrack を直接読んだりしない。
+自動追従の状態は保存設定ではなく runtime の表示状態として扱い、Chrome Storage には保存しない。
+追従用のイベントや購読を追加する際は owner と cleanup を明確にし、
+session 終了・表示の破棄後に旧処理を残さない。
 
 panel は truth の読み取り結果を表示するだけであり、source 制御の入口にしない。
 
@@ -1280,6 +1320,9 @@ history、再生経路への接続、panel は、この最初の実装単位に�
 
 ### `subtitle-history.ts`
 
+`SubtitleBlock[]` と現在の再生時刻から、current / past / future を導出する純関数とする。
+共通型は §18、block の時間範囲と出力順は前項の builder の仕様を参照する。
+
 ```ts
 // API の設計例。共通型は §18 を参照する。
 function deriveSubtitleHistory(
@@ -1287,6 +1330,48 @@ function deriveSubtitleHistory(
   currentTime: number,
 ): SubtitleHistorySnapshot;
 ```
+
+#### 再生位置からの導出仕様
+
+以下は合意済みの実装仕様であり、記載だけで実装・検証済みと扱わない。
+
+| 項目 | 仕様 |
+|---|---|
+| 入力 | builder が構築した表示順の block 配列と現在の再生時刻 |
+| 時刻条件 | currentTime は有限の非負数。不正な値は `RangeError` で拒否する |
+| current の意味 | panel 上で再生位置を代表する1 block。発話中であることは保証しない |
+| 選択条件 | `startTime <= currentTime` を満たす block のうち、startTime が最も大きいもの |
+| 同じ開始時刻 | 表示順で最初の block を current にする |
+| 時刻の基準 | block の startTime を使う。primary があれば primary 側、なければ secondary 側の開始時刻は builder が設定する |
+| 終了時刻 | endTime を current の切り替え条件に使わない |
+| 全行の強調 | 全 block が必ず一度 current になることは要求しない |
+| past | current より前の block を表示順で返す |
+| future | current より後の block を表示順で返す |
+| 先頭より前 | current は null、past は空配列、全 block が future |
+| 空配列 | current は null、past / future は空配列 |
+| 空白区間・末尾 | 次の開始時刻に到達するまで、開始時刻方式で最後に選ばれる current を維持する |
+| seek | seek 先の時刻から同じ規則で再計算する。前回の結果や再生方向に依存しない |
+| 入力の保持 | 入力配列・block を変更せず、並べ替えない |
+| 戻り値の型 | 既存の SubtitleHistorySnapshot を使う。SubtitleHistoryView は既存の別名として維持する |
+| 責務境界 | source・TextTrack・video・DOMを直接読まず、購読・timer・スクロールを持たない |
+
+past / future は「終了済み / 未開始」ではなく、panel 上の位置関係を表す。
+同じ開始時刻の2件目以降は、開始時刻を過ぎても future に含まれる場合がある。
+current 以外の block を、非選択という理由で取り除かない。
+
+割合から切替時刻を作る方式と、終了時刻を理由に以前の block へ戻る方式は採用しない。
+強調やスクロールのDOM処理は history に持ち込まない。
+
+#### 境界時刻の例
+
+| block の開始時刻・表示順 | 再生時刻 | current |
+|---|---|---|
+| A:10秒、B:11秒、C:12秒 | 10秒未満 | null |
+| A:10秒、B:11秒、C:12秒 | 10秒以上11秒未満 | A |
+| A:10秒、B:11秒、C:12秒 | 11秒以上12秒未満 | B |
+| A:10秒、B:11秒、C:12秒 | 12秒以降 | C |
+| A:10秒、B:10秒、C:18秒 | 10秒以上18秒未満 | A。Bはfutureに残す |
+| A:10秒、B:10秒、C:18秒 | 18秒以降 | C。A・Bはpastに残す |
 
 ### `panel-host.ts`
 
