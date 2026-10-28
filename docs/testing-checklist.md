@@ -153,7 +153,7 @@ npm run test
 - 手動スモークテストは、原則として typecheck、lint、test がすべて成功してから開始する。
 - 不具合調査時は、debug log または health snapshot で設定、採用 track、current subtitle、session 状態、layout 状態、UI state を観測できる状態を用意する。
 - 初期版では `extension enabled state` と `panel open state` は保存されない。通常起動の確認では、毎回 OFF / closed で始まることを確認する。
-- 開発用の自動 ON を使う実機確認は、通常起動の確認と分ける。フラグの役割・維持期限は `implementation-workflow.md` の「実機確認用フラグ」に従う。
+- 開発用の自動 ON を使うブラウザ確認は、通常起動の確認と分ける。フラグの役割・使用条件・無効化時期は `implementation-workflow.md` の「開発用・ブラウザ確認用フラグ」に従う。
 - 開発用フラグを使った場合は、その名前・値と確認範囲を実施結果に記録する。自動 ON での確認を、通常起動の OFF 開始や正式な ON/OFF toggle の確認済みとして扱わない。
 - 診断表示を有効にした確認と、無効にした確認を区別して記録する。
 - 保存設定と runtime state を混同しない前提で確認する。
@@ -166,7 +166,7 @@ npm run test
    npm run check && npm run lint && npm test
    ```
 
-2. 実機確認に使うコードと開発用フラグの値を確認する。フラグの運用は `implementation-workflow.md` の「実機確認用フラグ」に従う。
+2. ブラウザ確認に使うコードと開発用フラグの値を確認する。フラグの運用は `implementation-workflow.md` の「開発用・ブラウザ確認用フラグ」に従う。
 
 3. 次の build を実行し、成功したことを確認する。
 

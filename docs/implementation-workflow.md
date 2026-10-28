@@ -804,8 +804,8 @@ readiness 待機と retry の実装を index へ移さない。
 4. index から保存設定と fallback を渡す
 5. 関連自動テストと build を通す
 6. 正本文書と実装の配置・API・owner を照合する
-7. entry 固有の回帰確認と Apple TV+ 実機確認を行う
-8. 実機確認用フラグの使用状態、結果と未確認事項を記録する。フラグを戻す時期は「実機確認用フラグ」に従う
+7. entry 固有の回帰確認と Apple TV+ のブラウザ確認を行う
+8. 開発用フラグの使用状態、結果と未確認事項を記録する。使用条件と無効化時期は、本書の「開発用・ブラウザ確認用フラグ」に従う
 
 ### テストファイルの分割
 
@@ -817,32 +817,10 @@ readiness 待機と retry の実装を index へ移さない。
 - 分割時は既存テストの移動先を確認し、件数だけで確認内容の維持を判断しない
 - 必要な JSDoc や cleanup の説明を削って、行数を減らさない
 
-### 実機確認用フラグ
+### ブラウザ確認の起動と診断
 
-`src/content/index.ts` の次の2つを、開発中の実機確認に使う。
-役割と維持期限は別々に扱う。
-
-#### 自動 ON：`DEBUG_AUTO_ENABLE_SUBTITLES`
-
-- 正式な ON/OFF toggle を実装するまでは true を維持し、後続 Phase の実機確認にも使う
-- 保存設定が ready の場合だけ、起動時に extension enabled state を true にする
-- panel を開くフラグではない
-- 正式な ON/OFF toggle の実装・検証完了とは扱わない
-- 実機確認のたびに false へ戻す必要はない
-- 正式な ON/OFF toggle の実装時に false に戻し、toggle による開始・停止と通常起動を検証する
-
-#### 診断表示：`DEBUG_SESSION_BADGE`
-
-- リリースまでは true を維持し、session と字幕取得の診断表示に使う
-- 自動 ON とは独立したフラグであり、診断表示だけで拡張を ON にしない
-- リリース前に false にし、診断表示なしの動作を検証する
-
-両フラグとも storage に保存しない。
-通常起動を OFF / closed とする製品仕様は変更せず、
-開発中の自動 ON を暫定的な起動手段として区別する。
-
-build、拡張再読み込み、ページ再読み込みの具体的手順は、
-`testing-checklist.md` の「実行前提 > 手動スモーク前の準備」を参照する。
+正式な ON/OFF toggle を使わない起動と、session・字幕取得の診断には開発用フラグを使う。
+各フラグの役割・使用条件・無効化時期は、本書の「開発用・ブラウザ確認用フラグ」を参照する。
 
 ### Phase 4 の接続範囲に含めないもの
 
@@ -878,7 +856,7 @@ build、拡張再読み込み、ページ再読み込みの具体的手順は、
 - entry 接続後に typecheck、lint、全テスト、build
 - entry の起動条件、同一 target 再評価、pagehide cleanup を回帰確認する
 - Apple TV+ で track 採用、bind、cue 取得、停止時解除を確認する
-- 実機確認用フラグの使用状態を記録し、各フラグを false にする時期に無効化後の動作も確認する
+- 開発用フラグの使用状態を記録し、「開発用・ブラウザ確認用フラグ」で定める時期に無効化後の動作も確認する
 
 module のテスト成功だけで、entry の分岐やブラウザ上の動作を確認済みと扱わない。
 
@@ -922,7 +900,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 - `src/content/debug-subtitle-log.ts` は lifecycle の公開取得・購読 API だけを使い、block / history の要約を既存の subtitle logger の info で出力する
 - `src/content/index.ts` は `DEBUG_SUBTITLE_SNAPSHOT_LOG` と配線だけを持ち、観測の dispose を top-level bag に登録する
-- フラグは実機確認中は true、通常利用・配布前は false とし、storage に保存しない。変更後は再 build・拡張とページの再読み込みを行う
+- `DEBUG_SUBTITLE_SNAPSHOT_LOG` の使用条件・無効化時期・変更後の手順は、本書の「開発用・ブラウザ確認用フラグ」に従う
 - 出力内容・観測手順は testing-checklist の「再生経路への接続の確認」を参照する
 - 同テストで無効時の購読・取得抑制、要約の重複抑制、取得失敗後の復帰、解除後の残存 callback を確認する
 - entry の同テストで接続と lifecycle より先の cleanup を確認する
@@ -1244,6 +1222,40 @@ export type RestartReason =
 
 - 不具合修正のたびに対象 test を再実行する
 - release 前に build、typecheck、lint、test、manual smoke を一式実施する
+
+## 開発用・ブラウザ確認用フラグ
+
+`src/content/index.ts` の次の3フラグを、Phase をまたぐ開発・ブラウザ確認に使う。
+役割・使用条件・無効化時期は、フラグごとに扱う。
+
+### 自動 ON：`DEBUG_AUTO_ENABLE_SUBTITLES`
+
+- 正式な ON/OFF toggle を実装するまでは true を維持し、後続 Phase のブラウザ確認にも使う
+- 保存設定が ready の場合だけ、起動時に extension enabled state を true にする
+- panel を開くフラグではない
+- 正式な ON/OFF toggle の実装・検証完了とは扱わない
+- ブラウザ確認のたびに false へ戻す必要はない
+- 正式な ON/OFF toggle の実装時に false に戻し、toggle による開始・停止と通常起動を検証する
+
+### 診断表示：`DEBUG_SESSION_BADGE`
+
+- リリースまでは true を維持し、session と字幕取得の診断表示に使う
+- 自動 ON とは独立したフラグであり、診断表示だけで拡張を ON にしない
+- リリース前に false にし、診断表示なしの動作を検証する
+
+### 字幕データのログ：`DEBUG_SUBTITLE_SNAPSHOT_LOG`
+
+- 字幕データをブラウザで確認する間は true にし、通常利用・配布前は false にする
+- 有効な保存設定と extension enabled state が必要であり、このフラグだけで拡張を ON にしない
+- 出力には字幕本文が含まれるため、共有時は必要部分だけに絞る
+- 出力内容と観測手順は `docs/testing-checklist.md` の「再生経路への接続の確認」を参照する
+
+3フラグとも storage に保存しない。
+通常起動を OFF / closed とする製品仕様は変更せず、
+開発中の自動 ON を暫定的な起動手段として区別する。
+
+フラグを変更した後は再 build し、拡張とページを再読み込みする。
+具体的な手順は `docs/testing-checklist.md` の「実行前提 > 手動スモーク前の準備」を参照する。
 
 ## フェーズごとの検証ルール
 
