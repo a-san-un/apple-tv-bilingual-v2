@@ -44,7 +44,7 @@ const start = vi.fn((target: PlaybackTarget | null, reason: RestartReason = 'ini
   stateListener?.(state);
 });
 const stop = vi.fn(() => {
-  state = { status: 'stopped', target: state.target, waiting: null, reason: null };
+  state = { status: 'stopped', target: null, waiting: null, reason: null };
   stateListener?.(state);
 });
 
@@ -191,5 +191,66 @@ describe('字幕snapshotログの配線', () => {
       throw new Error('both cleanup calls must exist');
     }
     expect(logOrder).toBeLessThan(lifecycleOrder);
+  });
+});
+
+/** coordinator の配線と実 lifecycle への解除到達を分けて検証する。 */
+describe('content entry の panel 配線', () => {
+  it('既存 store を渡し、開発用起動で初回だけ開く', () => {
+    expect(createUiStateStore).toHaveBeenCalledTimes(1);
+    expect(createSessionLifecycle).toHaveBeenCalledWith(expect.objectContaining({
+      panel: { uiState: store },
+    }));
+    expect(store.getState()).toEqual({ extensionEnabled: true, panelOpen: true });
+  });
+
+  it('開閉だけでは再開始せず、target 再評価でも手動 close を上書きしない', () => {
+    store.setPanelOpen(false);
+    store.setPanelOpen(true);
+    store.setPanelOpen(false);
+    expect(start).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    emitMutation();
+    vi.advanceTimersByTime(120);
+    expect(store.getState().panelOpen).toBe(false);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('実 lifecycle と panel を経由して OFF・再開・pagehide の解除が到達する', async () => {
+    // beforeEach の mock entry を終了してから、同じ fixture で実接続を起動する。
+    window.dispatchEvent(new Event('pagehide'));
+    vi.resetModules();
+    const actual = await vi.importActual<typeof import('./session-lifecycle')>('./session-lifecycle');
+    vi.mocked(createSessionLifecycle).mockImplementationOnce(actual.createSessionLifecycle);
+    await import('./index');
+    await Promise.resolve();
+    const result = vi.mocked(createUiStateStore).mock.results.at(-1);
+    if (result?.type !== 'return') throw new Error('entry must create its UI store');
+    const connectedStore: UiStateStore = result.value;
+    const host = document.querySelector('#atv-panel-host');
+    expect(host).not.toBeNull();
+    expect(document.querySelector<HTMLElement>('[data-subtitle-panel]')?.hidden).toBe(false);
+    connectedStore.setPanelOpen(false);
+    expect(document.querySelector('#atv-panel-host')).toBe(host);
+    expect(document.querySelector<HTMLElement>('[data-subtitle-panel]')?.hidden).toBe(true);
+    connectedStore.setExtensionEnabled(false);
+    expect(document.querySelector('#atv-panel-host')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    connectedStore.setExtensionEnabled(true);
+    const restartedHost = document.querySelector('#atv-panel-host');
+    expect(restartedHost).not.toBeNull();
+    expect(restartedHost).not.toBe(host);
+    expect(connectedStore.getState().panelOpen).toBe(false);
+    expect(document.querySelector<HTMLElement>('[data-subtitle-panel]')?.hidden).toBe(true);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(document.querySelector('#atv-panel-host')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    connectedStore.setPanelOpen(true);
+    connectedStore.setExtensionEnabled(false);
+    connectedStore.setExtensionEnabled(true);
+    emitMutation();
+    vi.advanceTimersByTime(500);
+    expect(document.querySelector('#atv-panel-host')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

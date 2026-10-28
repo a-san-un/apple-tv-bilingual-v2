@@ -8,6 +8,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionLifecycle } from './session-lifecycle';
+import { createUiStateStore } from '../ui/ui-state';
+import * as panelConnection from './panel-session';
 import { resolvePlaybackTarget } from './playback-root';
 import { createSubtitleSession, type SubtitleSessionSnapshot } from '../subtitles/subtitle-session';
 import type { DisposeFn } from '../shared/types';
@@ -903,3 +905,270 @@ describe('session-lifecycle の停止後参照', () => {
     },
   );
 });
+
+/** 実 host / renderer と字幕接続 mock で、処理 session 単位の panel 寿命を確認する。 */
+describe('session-lifecycle の panel 接続',
+  /** panel を使う接続ケースを登録する。 */
+  () => {
+    it('待機 retry と running 移行で host を維持し、字幕更新を描画する',
+      /** readiness と panel の寿命を分離する契約を確認する。 */
+      () => {
+        const ui = createUiStateStore();
+        ui.setExtensionEnabled(true);
+        ui.setPanelOpen(true);
+        const data = createSubtitleDataMock('first');
+        createSubtitleSessionMock.mockReturnValue(data.session);
+        const target = createTarget();
+        const scheduler = createRetryScheduler();
+        const lifecycle = createSessionLifecycle({ doc: document, subtitle: { settings: { primaryLang: 'en', secondaryLang: 'ja' } }, panel: { uiState: ui }, scheduleRetry: scheduler.schedule });
+        try {
+          lifecycle.start(target);
+          const host = target.panelMountEl.querySelector('#atv-panel-host');
+          expect(host).not.toBeNull();
+          expect(host?.textContent).toBe('表示できる字幕はありません');
+          scheduler.fire(0);
+          expect(target.panelMountEl.querySelector('#atv-panel-host')).toBe(host);
+          setTrackCount(target.videoEl, 1);
+          scheduler.fire(1);
+          expect(lifecycle.getState().status).toBe('running');
+          expect(target.panelMountEl.querySelector('#atv-panel-host')).toBe(host);
+          expect(host?.textContent).toBe('first');
+          const next = createSubtitleDataMock('updated');
+          data.getSnapshot.mockReturnValue(next.session.getSnapshot());
+          data.fire();
+          expect(host?.textContent).toBe('updated');
+          ui.setPanelOpen(false);
+          expect(target.panelMountEl.querySelector<HTMLElement>('[data-subtitle-panel]')?.hidden).toBe(true);
+          expect(data.dispose).not.toHaveBeenCalled();
+          expect(lifecycle.getState().status).toBe('running');
+        } finally { lifecycle.dispose(); }
+      },
+    );
+
+    it.each(['stop', 'dispose'] as const)('%s は panel を外し、旧 UI 更新を切り離す',
+      /**
+       * 公開停止操作が panel 資源の解放まで到達することを確認する。
+       * @param method 停止または最終終了。
+       */
+      (method) => {
+        const ui = createUiStateStore();
+        ui.setExtensionEnabled(true); ui.setPanelOpen(true);
+        const target = createTarget(1);
+        const data = createSubtitleDataMock();
+        createSubtitleSessionMock.mockReturnValue(data.session);
+        const lifecycle = createSessionLifecycle({ doc: document, panel: { uiState: ui }, subtitle: { settings: { primaryLang: 'en', secondaryLang: 'ja' } } });
+        try {
+          lifecycle.start(target);
+          const root = target.panelMountEl.querySelector<HTMLElement>('[data-subtitle-panel]')!;
+          lifecycle[method]();
+          expect(target.panelMountEl.children).toHaveLength(0);
+          expect(lifecycle.getState().target).toBeNull();
+          const hidden = root.hidden;
+          data.getSnapshot.mockClear();
+          ui.setPanelOpen(false); data.fire();
+          expect(root.hidden).toBe(hidden);
+          expect(data.getSnapshot).not.toHaveBeenCalled();
+          expect(data.dispose).toHaveBeenCalledTimes(1);
+        } finally { lifecycle.dispose(); }
+      },
+    );
+
+    it('restart は旧 host を破棄し、手動 close を維持する',
+      /** store を作り直さず、新 panel へ現在の意思を渡す。 */
+      () => {
+        const ui = createUiStateStore();
+        ui.setExtensionEnabled(true); ui.setPanelOpen(true);
+        const target = createTarget(1);
+        const lifecycle = createSessionLifecycle({ doc: document, panel: { uiState: ui } });
+        try {
+          lifecycle.start(target);
+          const oldHost = target.panelMountEl.querySelector('#atv-panel-host')!;
+          ui.setPanelOpen(false);
+          lifecycle.start(target, 'manual-restart');
+          const newHost = target.panelMountEl.querySelector('#atv-panel-host');
+          expect(newHost).not.toBeNull(); expect(newHost).not.toBe(oldHost);
+          expect(oldHost.isConnected).toBe(false);
+          expect(target.panelMountEl.querySelectorAll('#atv-panel-host')).toHaveLength(1);
+          expect(ui.getState().panelOpen).toBe(false);
+          expect(target.panelMountEl.querySelector<HTMLElement>('[data-subtitle-panel]')?.hidden).toBe(true);
+        } finally { lifecycle.dispose(); }
+      },
+    );
+
+    it('待機中に mount 先が差し替わると旧 panel を持ち越さない',
+      /** 同じ video でも target snapshot の差を処理する。 */
+      () => {
+        const ui = createUiStateStore();
+        const target = createTarget();
+        const scheduler = createRetryScheduler();
+        const lifecycle = createSessionLifecycle({ doc: document, panel: { uiState: ui }, scheduleRetry: scheduler.schedule });
+        try {
+          lifecycle.start(target);
+          const oldHost = target.panelMountEl.querySelector('#atv-panel-host')!;
+          const mount = document.createElement('div');
+          mount.dataset.testid = 'video-player-content';
+          target.panelMountEl.replaceWith(mount);
+          scheduler.fire(0);
+          expect(target.panelMountEl.children).toHaveLength(0);
+          expect(oldHost.parentElement).toBeNull();
+          expect(mount.querySelector('#atv-panel-host')).not.toBeNull();
+          expect(lifecycle.getState().target?.panelMountEl).toBe(mount);
+          expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+        } finally { lifecycle.dispose(); }
+      },
+    );
+
+    it('待機中の target 消失で panel と旧 retry を解放する',
+      /** 解決不能な旧対象の DOM 参照を保持しない。 */
+      () => {
+        const target = createTarget();
+        const scheduler = createRetryScheduler();
+        const lifecycle = createSessionLifecycle({ doc: document, panel: { uiState: createUiStateStore() }, scheduleRetry: scheduler.schedule });
+        try {
+          lifecycle.start(target);
+          target.rootEl.remove();
+          scheduler.fire(0);
+          expect(lifecycle.getState().target).toBeNull();
+          expect(target.panelMountEl.children).toHaveLength(0);
+          expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+          scheduler.fire(0);
+          expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+          lifecycle.start(null);
+          expect(document.querySelector('#atv-panel-host')).toBeNull();
+        } finally { lifecycle.dispose(); }
+      },
+    );
+
+    it('panel 生成失敗でも字幕接続を開始する',
+      /** 表示失敗を記録し、独立した字幕処理を妨げない。 */
+      () => {
+        const log = observeCleanupErrors();
+        const error = new Error('panel start failed');
+        vi.spyOn(panelConnection, 'createPanelSession').mockImplementationOnce(
+          /** panel 初期化を失敗させる。@throws テスト用エラー。 */
+          () => { throw error; },
+        );
+        const target = createTarget(1);
+        const lifecycle = createSessionLifecycle({ doc: document, panel: { uiState: createUiStateStore() }, subtitle: { settings: { primaryLang: 'en', secondaryLang: 'ja' } } });
+        try {
+          lifecycle.start(target);
+          expect(lifecycle.getState().status).toBe('running');
+          expect(createSubtitleSessionMock).toHaveBeenCalledTimes(1);
+          expect(log).toHaveBeenCalledWith('[atv-bilingual:panel] panel session start failed', error);
+        } finally { lifecycle.dispose(); }
+      },
+    );
+
+    it('stopped からの panel 初期化中でも stop が有効になる',
+      /** 状態値だけで開始途中の停止を省略しないことを確認する。 */
+      () => {
+        const ui = createUiStateStore();
+        const target = createTarget(1);
+        let interrupt = false;
+        const lifecycle = createSessionLifecycle({ doc: document, panel: { uiState: {
+          /** 初期描画中に停止を再入させる。@returns store の現在値。 */
+          getState: () => { if (interrupt) { interrupt = false; lifecycle.stop(); } return ui.getState(); },
+          subscribe: ui.subscribe,
+        } }, subtitle: { settings: { primaryLang: 'en', secondaryLang: 'ja' } } });
+        try {
+          lifecycle.stop();
+          interrupt = true;
+          lifecycle.start(target);
+          expect(lifecycle.getState().status).toBe('stopped');
+          expect(lifecycle.getState().target).toBeNull();
+          expect(target.panelMountEl.children).toHaveLength(0);
+          expect(createSubtitleSessionMock).not.toHaveBeenCalled();
+        } finally { lifecycle.dispose(); }
+      },
+    );
+
+    it('stop の panel cleanup 中に始まった新接続を古い stop が壊さない',
+      /** 外側の停止要求より再入した開始要求を優先する。 */
+      () => {
+        const first = createSubtitleDataMock('first');
+        const second = createSubtitleDataMock('second');
+        createSubtitleSessionMock.mockReturnValueOnce(first.session).mockReturnValueOnce(second.session);
+        const ui = createUiStateStore(); ui.setExtensionEnabled(true); ui.setPanelOpen(true);
+        const target = createTarget(1);
+        const lifecycle = createSessionLifecycle({ doc: document, panel: { uiState: ui }, subtitle: { settings: { primaryLang: 'en', secondaryLang: 'ja' } } });
+        try {
+          lifecycle.start(target);
+          const host = target.panelMountEl.querySelector<HTMLElement>('#atv-panel-host')!;
+          const remove = host.remove.bind(host);
+          const removal = vi.spyOn(host, 'remove').mockImplementationOnce(
+            /** 旧 host を外してから開始を再入させる。 */
+            () => { remove(); lifecycle.start(target, 'manual-restart'); },
+          );
+          lifecycle.stop();
+          expect(removal).toHaveReturnedTimes(1);
+          expect(lifecycle.getState().status).toBe('running');
+          expect(lifecycle.getState().reason).toBe('manual-restart');
+          expect(target.panelMountEl.textContent).toBe('second');
+          expect(first.dispose).toHaveBeenCalledTimes(1);
+          expect(second.dispose).not.toHaveBeenCalled();
+        } finally { lifecycle.dispose(); }
+      },
+    );
+  },
+);
+
+/** panel の解除失敗を他資源の停止へ伝播させない契約を確認する。 */
+describe('session-lifecycle の panel cleanup 失敗',
+  /** 待機中と字幕接続中のケースを登録する。 */
+  () => {
+    it.each([0, 1])('trackCount=%s で UI 購読解除失敗後も停止を完了する',
+      /**
+       * 解除失敗を記録し、待機・字幕接続・DOM の停止を継続する。
+       * @param trackCount readiness の判定に使う件数。
+       */
+      (trackCount) => {
+        const target = createTarget(trackCount);
+        const scheduler = createRetryScheduler();
+        const ui = createUiStateStore();
+        ui.setExtensionEnabled(true); ui.setPanelOpen(true);
+        const error = new Error('UI unsubscribe failed');
+        const log = observeCleanupErrors();
+        const subscribe = ui.subscribe;
+        const unsubscribe = vi.fn(
+          /** 解除失敗を再現する。@throws テスト用の解除エラー。 */
+          () => { throw error; },
+        );
+        const data = createSubtitleDataMock();
+        createSubtitleSessionMock.mockReturnValue(data.session);
+        const lifecycle = createSessionLifecycle({
+          doc: document, scheduleRetry: scheduler.schedule,
+          subtitle: { settings: { primaryLang: 'en', secondaryLang: 'ja' } },
+          panel: { uiState: {
+            getState: ui.getState,
+            /**
+             * callback を残したまま解除に失敗する境界を作る。
+             * @param listener UI 更新の受信先。
+             * @returns 失敗を再現する解除関数。
+             */
+            subscribe: (listener) => { subscribe(listener); return unsubscribe; },
+          } },
+        });
+        try {
+          lifecycle.start(target);
+          lifecycle.stop();
+          expect(lifecycle.getState().status).toBe('stopped');
+          expect(lifecycle.getState().target).toBeNull();
+          expect(target.panelMountEl.children).toHaveLength(0);
+          expect(log).toHaveBeenCalledWith('[atv-bilingual:cleanup] panel session cleanup failed', expect.any(AggregateError));
+          expect(unsubscribe).toHaveBeenCalledTimes(1);
+          if (trackCount === 0) {
+            expect(scheduler.getDisposer(0)).toHaveBeenCalledTimes(1);
+            expect(data.dispose).not.toHaveBeenCalled();
+          } else {
+            expect(data.dispose).toHaveBeenCalledTimes(1);
+          }
+          data.getSnapshot.mockClear();
+          ui.setPanelOpen(false); data.fire();
+          expect(data.getSnapshot).not.toHaveBeenCalled();
+          lifecycle.dispose();
+          expect(unsubscribe).toHaveBeenCalledTimes(1);
+        } finally { lifecycle.dispose(); }
+      },
+    );
+  },
+);

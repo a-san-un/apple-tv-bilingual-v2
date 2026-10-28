@@ -2,10 +2,12 @@
  * playback session の開始停止、readiness 待機、video 差し替え検知を所有する。
  * 字幕接続の詳細は subtitle-session.ts に委譲し、データ取得と更新通知だけを中継する。
  * 中継購読の解除と字幕接続の dispose を、接続単位の bag に保持する。
- * 待機と字幕接続は、旧参照を切り離してから cleanup を試す。
+ * 待機・字幕・任意の panel 接続は、旧参照を切り離してから cleanup を試す。
+ * panel DOM の操作・購読の解除本体は panel-session.ts に委譲する。
  * track 選定、cue 読取、字幕ログ、panel 描画、native menu 同期は担当しない。
  */
 import { createDisposeBag, type DisposeBag } from '../shared/dispose';
+import { createPanelSession } from './panel-session';
 import type { ReadySettings } from '../settings/settings-store';
 import {
   createSubtitleSession,
@@ -18,7 +20,9 @@ import {
   resolvePlaybackTarget,
 } from './playback-root';
 import type {
+  Disposable,
   DisposeFn,
+  UiStateStore,
   LanguageCode,
   PlaybackTarget,
   RestartReason,
@@ -62,6 +66,9 @@ export type SessionLifecycleOptions = {
   retryDelayMs?: number;
   scheduleRetry?: (callback: () => void, delayMs: number) => DisposeFn;
   subtitle?: SessionSubtitleInput;
+
+  /** 既存の操作側 UI store。省略時は panel を生成しない。 */
+  panel?: { uiState: Pick<UiStateStore, 'getState' | 'subscribe'> };
 
   /** 字幕観測情報。null は旧接続の情報をクリアする通知。 */
   onSubtitleObservation?: (
@@ -218,7 +225,46 @@ export const createSessionLifecycle = (
   let subtitleSession: SubtitleSession | null = null;
   let subtitleSessionBag: DisposeBag | null = null;
   let subtitleGeneration = 0;
+  // 字幕接続の世代とは別に、panel 初期化・cleanup をまたぐ開始停止要求を識別する。
+  let lifecycleRevision = 0;
+  let startingRevision: number | null = null;
+  let panelSession: Disposable | null = null;
   let disposed = false;
+
+  /**
+   * 現在の字幕接続から snapshot を取得する。
+   * @returns 接続中の写し。接続なし・最終破棄後は null。
+   * @throws 字幕接続の取得失敗。
+   */
+  const getSubtitleSnapshot = (): SubtitleSessionSnapshot | null =>
+    disposed || subtitleSession === null ? null : subtitleSession.getSnapshot();
+
+  /**
+   * controller の字幕更新を登録単位で購読する。即時通知は行わない。
+   * @param listener 引数なしで更新を受け取る callback。
+   * @returns 登録元が保持・実行する冪等な解除関数。最終破棄後の登録は無効。
+   */
+  const subscribeSubtitle = (listener: () => void): DisposeFn => {
+    if (disposed) {
+      /** 最終終了後は購読を登録しない。 */
+      return () => {};
+    }
+    const entry = { listener };
+    subtitleListeners.add(entry);
+    /** 登録元の寿命が終了した購読だけを解除する。 */
+    return () => { subtitleListeners.delete(entry); };
+  };
+
+  /** panel 接続を先に保持先から外し、解除失敗後も他資源の cleanup を可能にする。 */
+  const releasePanelSession = (): void => {
+    const current = panelSession;
+    panelSession = null;
+    try {
+      current?.dispose();
+    } catch (error) {
+      console.error('[atv-bilingual:cleanup] panel session cleanup failed', error);
+    }
+  };
 
   /**
    * 字幕観測情報を渡し、観測先の例外を lifecycle へ伝播させない。
@@ -241,9 +287,12 @@ export const createSessionLifecycle = (
   /** 登録済み listener へ、最新 state の写しを通知する。 */
   const notify = (): void => {
     const snapshot = cloneState(state);
-    listeners.forEach((listener) => {
-      listener(snapshot);
-    });
+    const revision = lifecycleRevision;
+    for (const listener of [...listeners]) {
+      // 先行購読者による停止・再開始後に、古い状態通知を続けない。
+      if (disposed || revision !== lifecycleRevision) return;
+      if (listeners.has(listener)) listener(snapshot);
+    }
   };
 
   /**
@@ -453,12 +502,14 @@ export const createSessionLifecycle = (
 
       const latestTarget = resolveNextTarget(target);
       if (latestTarget === null) {
-        enterWaiting(target, reason, retryCount + 1, startedAt);
+        // 消失した target の panel と待機を外し、再発見は外部の再評価に委ねる。
+        start(null, reason);
         return;
       }
-      if (latestTarget.videoEl !== target.videoEl) {
-        // video 差し替えでは旧待機を引き継がず、新 target で開始し直す。
-        start(latestTarget, 'video-replaced');
+      const comparison = comparePlaybackTargetSnapshots(target.snapshot, latestTarget.snapshot);
+      if (!comparison.isSameTarget) {
+        // 同じ video でも mount 先が変われば、旧 panel を次の対象へ持ち越さない。
+        start(latestTarget, comparison.hasVideoChanged ? 'video-replaced' : reason);
         return;
       }
       if (isSubtitleReady(latestTarget)) {
@@ -486,42 +537,64 @@ export const createSessionLifecycle = (
       return;
     }
 
-    // クリア通知中に再入した start / stop を、古い開始処理で上書きしない。
-    const generation = subtitleGeneration + 1;
-    releaseSubtitleSession();
-    if (disposed || generation !== subtitleGeneration) return;
-    waitingBagHolder.dispose();
-    if (disposed || generation !== subtitleGeneration) return;
-    if (target === null) {
-      setState({ status: 'waiting', target: null, waiting: null, reason });
-      return;
-    }
-    if (isSubtitleReady(target)) {
-      enterRunning(target, reason);
-      return;
-    }
+    const revision = ++lifecycleRevision;
+    startingRevision = revision;
+    try {
+      // panel を先に外し、旧字幕のクリア通知で終了済み DOM を更新しない。
+      releasePanelSession();
+      if (disposed || revision !== lifecycleRevision) return;
+      const generation = subtitleGeneration + 1;
+      releaseSubtitleSession();
+      if (disposed || revision !== lifecycleRevision || generation !== subtitleGeneration) return;
+      waitingBagHolder.dispose();
+      if (disposed || revision !== lifecycleRevision) return;
+      if (target === null) {
+        setState({ status: 'waiting', target: null, waiting: null, reason });
+        return;
+      }
 
-    const previousWaiting = state.status === 'waiting' ? state.waiting : null;
-    enterWaiting(
-      target,
-      reason,
-      previousWaiting?.retryCount ?? 0,
-      previousWaiting?.startedAt ?? now(),
-    );
+      if (options.panel !== undefined) {
+        try {
+          const created = createPanelSession({
+            mountEl: target.panelMountEl,
+            uiState: options.panel.uiState,
+            getSubtitleSnapshot,
+            subscribeSubtitle,
+          });
+          // 初期描画中に停止・再開始された接続を、現在の保持先へ戻さない。
+          if (disposed || revision !== lifecycleRevision) {
+            created.dispose();
+            return;
+          }
+          panelSession = created;
+        } catch (error) {
+          console.error('[atv-bilingual:panel] panel session start failed', error);
+        }
+      }
+      if (disposed || revision !== lifecycleRevision) return;
+      if (isSubtitleReady(target)) {
+        enterRunning(target, reason);
+        return;
+      }
+      const previousWaiting = state.status === 'waiting' ? state.waiting : null;
+      enterWaiting(target, reason, previousWaiting?.retryCount ?? 0, previousWaiting?.startedAt ?? now());
+    } finally {
+      if (startingRevision === revision) startingRevision = null;
+    }
   };
 
-  /** 字幕接続と待機の解除を試し、停止状態へ更新する。 */
+  /** panel・字幕接続・待機を解放し、公開購読を維持した停止状態へ更新する。 */
   const stop = (): void => {
-    if (disposed || state.status === 'stopped') {
-      return;
-    }
-
+    if (disposed || (state.status === 'stopped' && startingRevision === null)) return;
+    const revision = ++lifecycleRevision;
+    releasePanelSession();
+    if (disposed || revision !== lifecycleRevision) return;
     const generation = subtitleGeneration + 1;
     releaseSubtitleSession();
-    if (disposed || generation !== subtitleGeneration) return;
+    if (disposed || revision !== lifecycleRevision || generation !== subtitleGeneration) return;
     waitingBagHolder.dispose();
-    if (disposed || generation !== subtitleGeneration) return;
-    // 終了した target を再開用に保持せず、次回 start の入力だけを使う。
+    if (disposed || revision !== lifecycleRevision) return;
+    // 次回開始では新たな入力 target を使い、旧 DOM を再開用に保持しない。
     setState(createInactiveState('stopped'));
   };
 
@@ -536,21 +609,14 @@ export const createSessionLifecycle = (
     },
 
     /** @returns 現在の接続の写し。接続なし・破棄後は null。取得以外ではコピーしない。 */
-    getSubtitleSnapshot(): SubtitleSessionSnapshot | null {
-      return disposed || subtitleSession === null ? null : subtitleSession.getSnapshot();
-    },
+    getSubtitleSnapshot,
 
     /**
      * 字幕データの更新だけを購読する。状態購読・診断通知とは独立する。
      * @param listener 更新後に引数なしで呼ぶ callback。即時通知はしない。
      * @returns 登録単位の冪等な解除関数。破棄後の登録は無効。
      */
-    subscribeSubtitle(listener: () => void): DisposeFn {
-      if (disposed) return () => {};
-      const entry = { listener };
-      subtitleListeners.add(entry);
-      return () => { subtitleListeners.delete(entry); };
-    },
+    subscribeSubtitle,
 
     start,
     stop,
@@ -562,6 +628,9 @@ export const createSessionLifecycle = (
       }
 
       disposed = true;
+      ++lifecycleRevision;
+      startingRevision = null;
+      releasePanelSession();
       subtitleListeners.clear();
       releaseSubtitleSession();
       waitingBagHolder.dispose();

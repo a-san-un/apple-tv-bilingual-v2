@@ -1737,7 +1737,9 @@ function createPlayerLayout(args: {
 controller は readiness 待機・開始停止・状態購読・字幕データの取得と更新通知を提供する。
 共通型は §18、解放処理に失敗した場合の動作は §19 を参照する。
 
-`subtitle` は字幕接続に使う設定入力であり、省略時は字幕接続を生成せず readiness の状態管理だけを行う。
+`subtitle` は字幕接続に使う設定入力であり、省略時は字幕接続を生成しない。
+`panel` は既存 UI store の読取・購読境界を受け取る任意入力であり、省略時は panel 接続を生成しない。
+両方を省略した場合は readiness の状態管理だけを行う。
 `onSubtitleObservation` は任意の診断用 callback であり、字幕データの取得・更新通知とは分けて扱う。
 `ReadySettings` は `docs/settings-spec.md`、`SubtitleSessionObservation` は `src/subtitles/subtitle-session.ts` を参照する。
 
@@ -1758,6 +1760,7 @@ type SessionLifecycleOptions = {
     delayMs: number,
   ) => DisposeFn;
   subtitle?: SessionSubtitleInput;
+  panel?: { uiState: Pick<UiStateStore, 'getState' | 'subscribe'> };
   onSubtitleObservation?: (
     observation: SubtitleSessionObservation | null,
   ) => void;
@@ -1782,6 +1785,10 @@ function createSessionLifecycle(
 公開操作・引数は、§13 の責務境界に従って実装提案時に具体化する。
 検出元が target 比較・理由選択を行って start を繰り返す契約とはしない。
 
+- 有効 target の開始時に panel 接続を生成し、同一 target の readiness retry と waiting から running への移行では維持する。UI store の意思は書き換えない。
+- 停止・再開始・最終 dispose では panel 接続を保持先から切り離して解放する。初期化中の停止・cleanup 中の再開始で古くなった開始停止要求は継続しない。
+- panel 初期化・解除の失敗は記録し、字幕処理・待機の開始停止を妨げない。readiness retry を panel 初期化の retry として使わない。
+- 待機中の再解決で target が消失した場合は旧 panel・待機を解放する。同一 video でも mount を含む target snapshot が変われば旧接続を持ち越さない。新しい視聴の識別とは区別する。
 - readiness 待機と retry は lifecycle が所有する。
 - 待機 bag は解除前に保持参照から切り離す。
 - 待機 cleanup の失敗は記録し、停止・再開始・破棄の後処理を継続する。

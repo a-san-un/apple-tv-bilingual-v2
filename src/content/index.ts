@@ -27,6 +27,9 @@ import { createUiStateStore } from '../ui/ui-state';
  */
 const DEBUG_AUTO_ENABLE_SUBTITLES = true;
 
+/** 初回表示の開発用。ready かつ有効な起動時だけ開き、再接続では意思を変えない。 */
+const DEBUG_AUTO_OPEN_PANEL = true;
+
 /** session 状態を観測する debug badge を表示する。 */
 const DEBUG_SESSION_BADGE = true;
 
@@ -47,6 +50,7 @@ const bootContentScript = async (): Promise<void> => {
   const uiStateStore = createUiStateStore();
   const debugBadge = createSessionDebugBadge(DEBUG_SESSION_BADGE);
   const sessionLifecycle = createSessionLifecycle({
+    panel: { uiState: uiStateStore },
     // badge 無効時は、診断専用の字幕観測 callback を接続しない。
     ...(DEBUG_SESSION_BADGE
       ? { onSubtitleObservation: debugBadge.updateSubtitle }
@@ -204,6 +208,14 @@ const bootContentScript = async (): Promise<void> => {
     // ready は設定の有効性だけを表す。通常起動で自動的に ON にはしない。
     if (DEBUG_AUTO_ENABLE_SUBTITLES && settingsResult.status === 'ready') {
       uiStateStore.setExtensionEnabled(true);
+    }
+    // 正式な開閉 UI の代用ではなく、初期表示を観測するための一回限りの入力。
+    if (
+      DEBUG_AUTO_OPEN_PANEL &&
+      settingsResult.status === 'ready' &&
+      uiStateStore.getState().extensionEnabled
+    ) {
+      uiStateStore.setPanelOpen(true);
     }
 
     let previousEnabled = uiStateStore.getState().extensionEnabled;

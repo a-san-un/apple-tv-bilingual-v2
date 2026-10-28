@@ -416,6 +416,20 @@ panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / 
 callback 内は観測にとどめ、正常終了・期待値・呼出回数は例外捕捉境界の外側で検証する。
 解除に失敗した資源を解除成功と扱わず、GC による回収や実機の全資源解除まで証明したとしない。
 
+### lifecycle と panel の接続テスト
+
+- panel 入力の省略時は従来の readiness / 字幕処理の契約を維持すること
+- 有効 target の待機開始時に host を生成し、同じ対象の retry と running 移行で重複生成しないこと
+- 字幕初回通知・更新を描画し、panel close で字幕接続を停止しないこと
+- stop / dispose で旧購読・DOM・target 参照を解放し、旧 UI 通知と字幕通知で再更新しないこと
+- restart で旧 host を破棄し、既存 UI store の開閉意思を維持すること
+- 待機中の mount 差替え・target 消失で旧 panel と待機を残さないこと
+- panel 初期化失敗でも字幕処理を妨げず、panel 解除失敗でも待機・字幕接続の停止を継続すること
+- 公開状態が stopped のまま開始中でも stop が有効であり、古い開始処理が panel・字幕接続を復活させないこと
+- panel cleanup 中の再開始を古い stop の後続処理が上書きせず、新接続を解除しないこと
+
+entry の配線・pagehide からの解除到達と実画面確認は、上記接続テストだけで完了としない。
+
 ### panel 表示・自動追従の手動確認
 
 拡張を ON にして panel を開き、次を確認する。
