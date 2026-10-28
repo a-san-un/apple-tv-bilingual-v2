@@ -197,14 +197,16 @@ src/
 │     └─ 再生画面領域と panel の 7:3 layout、layout state、observer、timer の適用・解除を担当する
 │
 ├─ ui/
-│  └─ ui-state.ts
-│     └─ extension enabled / panel open を持つ small store
+│  ├─ ui-state.ts
+│  │  └─ extension enabled / panel open を持つ small store
+│  └─ extension-enabled-controller.ts
+│     └─ ON/OFF の復元・操作・保存順序・通知状態を所有する（Phase 7で実装）
 │
 ├─ settings/
 │  ├─ language-options.ts
 │  │  └─ 対応言語 code の一覧と候補判定を提供する
 │  └─ settings-store.ts
-│     └─ `primaryLang` / `secondaryLang` の読込・保存を行う
+│     └─ 言語設定と全作品共通の ON/OFF の読込・保存を行う
 │
 └─ shared/
    ├─ types.ts
@@ -454,6 +456,28 @@ store は現在の処理 session より長く存続できる操作側 runtime �
 保存値の読込・保存は settings-store に委譲し、Storage API は直接扱わない。
 state の初期化・維持条件は §16 を参照する。
 
+### `src/ui/extension-enabled-controller.ts`
+
+操作側 runtime の ON/OFF 復元・明示操作・保存順序・通知状態の唯一の owner とする。生成関数は createExtensionEnabledController とし、Phase 7 で実装する計画である。
+
+- settings-store の専用 API に読込・保存を委譲し、Storage API を直接扱わない。
+- 現在の ON/OFF は ui-state を正本とし、別の有効状態を重複保持しない。保存要求には操作時点の boolean だけを記録する。
+- 初期化状態、通知状態、最新操作番号、保存要求の列、保存処理中か、dispose 済みかを保持する。これらは保存しない。
+- 初期読込中の明示操作を優先し、遅れた読込結果で選択値・通知を戻さない。
+- OFF→ON の明示操作では panel を開き、ON→OFF では閉じる。再保存や同じ ON の再要求で手動 close を解除しない。
+- 復元は保存値の適用までとし、新しい視聴の panel 初期表示は開始側の規則に従う。単なる復元で毎回開き直さない。
+- 保存を直列化し、古い結果は最新状態・通知に反映しない。一件の失敗で後続保存を止めない。
+- 保存中もトグル操作を受け付ける。回復操作の重複要求は抑止する。
+- DOM・video・track・字幕 truth・layout を持たず、lifecycle を直接呼ばない。UI state の有効状態を受け取る接続側が、開始停止を lifecycle へ委譲する。
+
+#### 寿命と cleanup
+
+- OFF、panel close、技術的 restart では維持する。トグル DOM の再生成では古い UI の購読だけを解除する。
+- content の top-level owner が controller の dispose を保持し、操作側 runtime の最終終了時に実行する。
+- dispose 後は新しい操作・購読を受け付けず、遅れた読込・保存結果で state 更新・通知を行わない。
+- 未開始の保存要求は破棄する。開始済み書込みは結果を受け止めるが UI へ反映せず、取り消せたとは扱わない。
+- 購読者と不要な参照を解放し、繰り返し dispose しても安全にする。終了前の未完了保存の永続化は保証しない。
+
 ### `src/settings/settings-store.ts`
 
 保存設定の読み書きだけを担当する。
@@ -522,6 +546,7 @@ resource owner は必ず1つに限定する。
 - `on-off-toggle.ts` は ON/OFF toggle の DOM と controls binding を所有する
 - `panel-open-close-button.ts` は panel 開閉ボタンの DOM と controls binding を所有する
 - `ui-state.ts` は UI state とその購読機構を所有する
+- `extension-enabled-controller.ts` は操作側の初期読込・保存要求列・通知状態とその購読機構を所有する
 
 購読解除関数は登録元が保持し、登録元の寿命が終了するときに実行する。
 処理 session に属する購読と、再開始を受け取る controller の公開購読は区別する。
@@ -556,6 +581,8 @@ panel-open-close-button.ts
 player-layout.ts
 shared/*
 ```
+
+操作側は content/index → extension-enabled-controller → settings-store / ui-state の一方向とする。ON/OFF UI は配線された操作 callback と表示入力を使い、controller は DOM や lifecycle に依存しない。
 
 依存ルールは次の通りとする。
 
@@ -949,11 +976,11 @@ panel は truth の読み取り結果を表示するだけであり、source 制
 
 - ON/OFF toggle から `setPanelOpen()` を直接呼ばない
 - panel 開閉ボタンから `setExtensionEnabled()` を直接呼ばない
-- 両者の協調は `session-lifecycle.ts` または `ui-state.ts` の購読側で扱う
+- ON/OFF 明示操作に伴う UI state の協調は `extension-enabled-controller.ts` が扱い、有効状態から処理開始停止への接続は lifecycle 側へ委譲する
 - OFF 中に panel を非表示にする場合も、それは session 側の反応として扱う
 - `ui-state.ts` が UI 意思を保持し、`player-layout.ts` が画面幾何を適用する
 
-協調側は、ON 操作時に panelOpen を true、OFF 操作時に false とする。
+extension-enabled-controller は、OFF→ON の明示操作時に panelOpen を true、ON→OFF 時に false とする。再保存では変更しない。
 ON の状態で新しい視聴を開始したときは panel を開く。
 panel の手動開閉では extensionEnabled とその保存値を変更しない。
 同じ視聴の技術的な再接続では panelOpen を維持する。
@@ -1001,7 +1028,7 @@ Chrome Storage に保存する。
 
 UI store は操作側 runtime が保持し、処理 session の start ごとに作り直さない。
 extensionEnabled は保存値を適用し、未保存時は true とする。
-ON 操作時と、ON の状態で新しい視聴を開始したときは panelOpen を true とする。
+OFF→ON の明示操作時と、ON の状態で新しい視聴を開始したときは panelOpen を true とする。再保存や同じ ON の再要求では手動 close を解除しない。
 OFF 操作時は panelOpen を false とする。
 視聴中の手動開閉と、同じ視聴の技術的再接続では §15 の規則を適用する。
 
@@ -1079,6 +1106,21 @@ function createUiStateStore(
   initialState?: Partial<ExtensionUiState>,
 ): UiStateStore;
 ```
+
+### `extension-enabled-controller.ts`
+
+生成関数は createExtensionEnabledController とする。公開操作の仕様は次とし、詳細な引数・戻り値型は実装提案時に具体化する。
+
+| 操作 | 仕様 |
+| --- | --- |
+| initialize() | 初期読込と復元を一度だけ行う。重複呼出しで再読込しない |
+| setEnabled(enabled) | トグルと「OFFを保存」の明示選択を即時適用し保存する |
+| retrySave() | 現在値の保存だけを再試行し、UI state は変更しない |
+| getState() | 通知状態・保存処理中かを取得する。有効状態を再定義しない |
+| subscribe(listener) | 操作側の表示状態の変更を通知し、解除関数を返す |
+| dispose() | 操作側 runtime を最終終了する |
+
+責務・非同期結果・終了後の扱いは §6 の同 module 節、表示文言と Storage API の型は settings-spec §11.3・§14.5 を参照する。
 
 ### `text-track-resolver.ts`
 
@@ -1728,7 +1770,7 @@ StoredSettings は言語設定の未完了を表現できる内部共通型で�
 `docs/settings-spec.md` を参照する。
 
 全作品共通の ON/OFF の保存値と、runtime の ExtensionUiState は区別する。
-ON/OFF の取得結果型は settings-spec の未決事項を確定してから具体化し、
+ON/OFF の取得結果型は settings-spec §14.5 を正本とし、定義元を settings-store とする。
 以下の言語設定型へ無条件に追加しない。
 
 ```ts

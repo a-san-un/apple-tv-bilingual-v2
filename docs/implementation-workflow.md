@@ -1020,6 +1020,8 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - `src/controls/panel-open-close-button.ts`
 - `src/layout/player-layout.ts`
 - `src/ui/ui-state.ts`
+- `src/ui/extension-enabled-controller.ts`
+- `src/ui/extension-enabled-controller.test.ts`
 - `src/settings/settings-store.ts`
 - `src/settings/settings-store.test.ts`
 - `src/content/index.ts`
@@ -1056,9 +1058,20 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - store の責務を超えて DOM を持たない
 - 全作品共通の ON/OFF の復元と、保存しない panel 開閉を区別する
 
+#### `src/ui/extension-enabled-controller.ts`
+
+- architecture の責務・公開操作・寿命・cleanup に従って操作側 owner を実装する
+- 初期読込、明示操作、保存の直列化、最新操作と通知を扱い、index.ts に本体を置かない
+- DOM と lifecycle を直接扱わず、settings-store と UI store を接続する
+
+#### `src/ui/extension-enabled-controller.test.ts`
+
+- 初期読込と操作の競合、保存順序・失敗後の継続、古い結果の抑止、回復操作を確認する
+- OFF・技術的 restart での維持と、最終 dispose 後の非干渉を区別する
+
 #### `src/settings/settings-store.ts`
 
-- ON/OFF の保存領域・読込失敗・型不正・保存失敗時の扱いを、settings-spec で確定してから実装する
+- settings-spec §14.5 の loadExtensionEnabled / saveExtensionEnabled と結果型を実装する
 - 全作品共通の ON/OFF の読込・保存を実装する
 - 言語保存と ON/OFF 保存で、互いの保存値を上書きしない境界を保つ
 - panel 開閉状態や UI state 全体の snapshot は保存しない
@@ -1071,8 +1084,8 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 #### `src/content/index.ts`
 
-- settings-store による ON/OFF の読込結果を、操作側 runtime の UI store へ適用する配線を行う
-- 操作側の変更要求を、保存要求と lifecycle による開始停止へ接続する
+- 操作側 controller と UI store・ON/OFF UI を生成・接続し、controller の初期化と最終 dispose を配線する
+- UI の明示選択・再保存を controller へ接続し、有効状態の変化による開始停止は lifecycle へ委譲する
 - 保存・復元の詳細や開始停止の判断本体は、それぞれの担当 module へ委譲する
 - 暫定の自動 ON から正式な復元経路へ移行し、保存済み OFF を開発用フラグで上書きしない
 
@@ -1099,7 +1112,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 ### 検証タイミング
 
 - 実装直後に typecheck、lint
-- `settings-store.ts`、`ui-state.ts`、`player-layout.ts` の test を追加または更新する
+- `settings-store.ts`、`extension-enabled-controller.ts`、`ui-state.ts`、`player-layout.ts` の test を追加または更新する
 - 保存値の復元と操作からの保存・開始停止について、接続テストを追加または更新する
 - 関連する自動テストの成功後、Apple TV+ 実画面で次を手動確認する
   - ON/OFF toggle の有効 / 無効

@@ -333,7 +333,7 @@ ON/OFF の保存要求と処理 session の開始停止との接続責務は arc
 `settings-store.ts` は、storage 値の内容だけでなく storage API の読み込み失敗にも耐える必要がある。
 
 言語設定の読込では、初期版は次の方針を採る。
-ON/OFF の未保存時の扱いと、読込・保存失敗時の未決事項は §11.3 を参照する。
+ON/OFF の未保存時・読込失敗・型不正・保存失敗時の扱いと回復 UI は §11.3 を参照する。
 
 - `chrome.storage.sync` の読み込み自体が失敗した場合、設定取得は失敗として扱う
 - 読み込み失敗時、popup は保存済み設定を表示できない状態としてエラー表示する
@@ -411,7 +411,7 @@ fallback は runtime の解決にだけ使い、`chrome.storage.sync` の `secon
 
 ON/OFF の保存要求・保存済み値は boolean として検証する。
 キー欠落による未保存と、存在する値の型不正は区別する。
-型不正時の fallback は未決事項とし、未保存時の既定 ON をそのまま適用すると決めない。
+型不正時は未保存時の既定 ON を適用せず、自動では字幕処理を開始しない。保存値を自動補正・上書きせず、§11.3 の明示操作によって回復する。
 
 ### 10.2 popup 側のバリデーション
 
@@ -503,9 +503,41 @@ ON/OFF は作品別・エピソード別に保存せず、全作品共通の1つ
 ON はユーザーの有効化意思を表す。
 ON であっても、言語設定の完了や処理開始条件を満たしたことを意味しない。
 
+#### ON/OFF の読込・保存と失敗時動作
+
+- 起動時に保存値を読み、キー欠落なら既定 ON、有効な boolean ならその値を適用する。読んだだけでは保存しない。
+- 読込失敗・型不正では自動で字幕処理を開始せず、保存値を書き換えない。ON/OFF の操作経路は残す。
+- この停止状態は、ユーザーが選んだ保存済み OFF とは区別する。
+- トグル操作は今回の ON/OFF へ即時反映し、選択値の保存を試みる。ON の処理開始は言語設定などの開始条件に従う。
+- 保存完了の成功・失敗を確認する。保存後の再読込・値の一致確認は行わない。
+- 保存失敗でも今回の選択を維持する。保存できなかった値は、再読み込み後に復元できるとは保証しない。
+- 再保存は現在の選択値の保存だけを行い、ON/OFF の切替・字幕処理の再起動・panel の開き直しは行わない。
+- 保存は直列化し、連続操作では最後の選択を優先する。古い保存結果で最新の runtime 状態・通知を上書きしない。
+- 自動の多段 retry や、別の保存領域への二重保存は追加しない。
+
+#### ON/OFF の通知と回復 UI
+
+- 再生画面左下の「情報」「続きを観る」の右隣に、小型トグルと「拡張 ON / OFF」を配置する見た目を基準とする。具体的な DOM 注入先は実機確認後に確定する。
+- ON/OFF は1つのトグルで切り替え、ON / OFF の2択ボタンにはしない。
+- 通知と回復操作はトグルの右隣の同じ行だけに表示する。下段への表示・折り返し・操作列の高さ変更は行わない。
+- 長い説明を下や別の領域に表示せず、詳細ポップオーバー・モーダル・拡張機能 popup へのメッセージ集約は行わない。
+- 通常時は通知・回復ボタンを表示しない。
+
+| 状況 | 右隣の文言 | 回復操作 |
+| --- | --- | --- |
+| 起動時の読込失敗 | 設定読込失敗 | OFFを保存 |
+| 保存値の型不正 | 設定値不正 | OFFを保存 |
+| 操作後の保存失敗 | 未保存 | 再保存 |
+
+- 読込失敗・型不正から ON にする場合は通常のトグルを使い、ON を即時適用して保存を試みる。
+- 「OFFを保存」は今回の停止状態を維持し、ユーザーの明示選択として OFF を保存する。検出しただけで不正値や取得できなかった保存値を上書きしない。
+- 保存成功時は理由表示・回復ボタンを取り除く。保存失敗時は「未保存」「再保存」へ切り替える。
+- 専用の「再読込」ボタンは設けない。再保存ボタンは保存失敗時だけ表示する。
+- OFF 中・panel 非表示中でも、トグルと必要な回復操作を利用できるようにする。
+
 未決事項:
 
-- ON/OFF の読込失敗、型不正、保存失敗時の詳細動作は、実装前に確定する。
+- 狭い画面での幅不足の扱い、OFF 時の配色・細部寸法・具体的な DOM 注入先は、横並び制約を守って実機確認後に確定する。
 - 新しい視聴と技術的な再接続の具体的な識別条件は未確定とする。
   restart reason や video identity だけで新しい視聴と断定しない。
 
@@ -672,7 +704,7 @@ export type StoredSettings = {
 
 これは言語設定の保存成功時の正本形式である。
 ON/OFF の保存値は boolean とし、未保存を許容する。
-その取得結果型・API は、未保存・読込失敗・型不正の扱いを確定してから具体化する。
+取得結果型・API は §14.5、操作側 owner は architecture の extension-enabled-controller を参照する。
 この型へ `panelOpen` や runtime の資源状態を追加しない。
 
 ### 14.2 正規化済み設定と runtime fallback
@@ -737,6 +769,45 @@ export type SettingsLoadResult =
 - 採用済み primary / secondary track: resolver の runtime 採用結果
 - UI の一時状態: popup ローカル state または `ui-state.ts`
 
+### 14.5 ON/OFF 専用 API
+
+定義元は `src/settings/settings-store.ts` とする。言語設定の型・API とは分ける。
+
+```ts
+export type ExtensionEnabledLoadResult =
+  | {
+      status: 'ready';
+      enabled: boolean;
+      source: 'stored' | 'default';
+    }
+  | {
+      status: 'error';
+      cause: 'storage-read-failed' | 'invalid-value';
+    };
+
+export type ExtensionEnabledSaveResult =
+  | { status: 'ready' }
+  | { status: 'error'; cause: 'storage-write-failed' };
+
+export function loadExtensionEnabled(
+  storageArea?: StorageAreaLike,
+): Promise<ExtensionEnabledLoadResult>;
+
+export function saveExtensionEnabled(
+  enabled: boolean,
+  storageArea?: StorageAreaLike,
+): Promise<ExtensionEnabledSaveResult>;
+```
+
+- StorageAreaLike は settings-store が定義する get / set の最小インターフェースを使い、テストで fake storage を注入できるようにする。
+- 保存領域の省略時は chrome.storage.local を使う。領域取得時の例外も捕捉し、読込・書込失敗の結果として返す。
+- キー欠落は ready・enabled:true・source:default、boolean の保存値は ready・その値・source:stored とする。読んだだけでは保存しない。
+- 読込失敗・型不正は error とし、enabled を返さない。
+- 保存成功の ready は要求値の書込み完了を表す。更新するキーは extensionEnabled だけとし、保存後の get・一致確認は行わない。
+- 再保存と「OFFを保存」も saveExtensionEnabled を使い、専用の保存 API を増やさない。
+- 保存順序・通知状態・runtime 反映は操作側 owner が担当し、settings-store は扱わない。
+- 言語設定型や ExtensionUiState へ保存結果を混ぜない。
+
 ---
 
 ## 15. 初期版で意図的に扱わないもの
@@ -764,7 +835,8 @@ export type SettingsLoadResult =
 | `src/settings/settings-store.ts` | 保存設定の読込・保存・検証・正規化 |
 | `src/shared/types.ts` | `StoredSettings` などの共通型 |
 | `src/subtitles/text-track-resolver.ts` | 保存設定を受けた実際の track 解決 |
-| `src/content/index.ts` | 設定変更を受けた再反映の入口 |
+| `src/ui/extension-enabled-controller.ts` | ON/OFF の復元・明示操作・保存順序・通知状態。詳細は architecture を参照 |
+| `src/content/index.ts` | 設定変更を受けた再反映の入口と操作側 module の配線 |
 
 本書はファイル構成の正本ではないが、責務の置き場所はこの粒度を前提とする。
 
@@ -786,7 +858,7 @@ export type SettingsLoadResult =
 - ON 操作時と、ON の状態で新しい視聴を開始したときの panel 初期表示が明記されている
 - 技術的な再接続で手動の panel 開閉を変更しないことが明記されている
 - 言語保存と ON/OFF 保存が互いの保存値を上書きしないことが明記されている
-- ON/OFF の失敗時動作と、新しい視聴の識別条件の未決事項が明示されている
+- ON/OFF の失敗時動作・横並びの回復 UI と、残る未決事項が明示されている
 - 旧形式値、破損値、Storage 読込失敗時の扱いが明記されている
 - `primaryLang` 未設定時に content 側が playback session を開始しないことが明記されている
 - popup と `settings-store.ts` の責務境界が明記されている
