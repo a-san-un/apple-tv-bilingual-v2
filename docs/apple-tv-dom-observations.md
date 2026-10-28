@@ -567,4 +567,4 @@ dialog.playback-view
 - 終了前後のvideo node identityや、別作品・別エピソード切替は今回確認していない。
 - バッジ個数やDOM不在は、内部listener・timer・購読の全件解除成功を証明しない。
 - 全作品・全track・全再生条件に一般化しない。
-- track解決・sessionの採用判断は `docs/apple-tv-dom-structure.md`、同時刻正規化・truthの契約は `docs/minimal-panel-architecture.md` を参照する。実施結果・進捗・未完了作業はSerenaのwork-handoffで管理する。
+- track 解決・session の採用判断は `docs/apple-tv-dom-structure.md`、同時刻正規化・truth の仕様は `docs/minimal-panel-architecture.md` を参照する。

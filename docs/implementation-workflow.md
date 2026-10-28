@@ -67,11 +67,11 @@ DOM の selector、実測値、時系列、未確認事項はこの文書へ重�
 
 初期版では、実装と検証の追いやすさを優先し、依存を増やしすぎない最小構成を採用する。
 
-### 初期版の採用候補
+### 初期版の採用技術
 
 - TypeScript
 - Chrome Extensions Manifest V3
-- bundler は `esbuild`（Phase 0 で確定。最小構成と設定の読みやすさを優先した）
+- bundler は `esbuild`。最小構成と設定の読みやすさを優先する
 - Vitest
 - ESLint
 - Prettier
@@ -93,31 +93,6 @@ DOM の selector、実測値、時系列、未確認事項はこの文書へ重�
 - runtime state は small store と plain object を基本とし、複雑なリアクティブ層を前提にしない
 - listener、timer、observer、binding は owner を 1 つに限定し、cleanup 可能な形で登録する
 - source は panel DOM を直接扱わず、renderer は source や `TextTrack` を直接読まない
-
-### bundler 未決定時の扱い
-
-bundler が未決定の場合は、Phase 0 で次の判断基準に基づいて決定する。
-
-- content script / popup / options 相当の複数 entry を無理なく扱えるか
-- TypeScript の build 導線が単純か
-- watch 実行が軽いか
-- Manifest V3 構成で余計な抽象化を増やさないか
-- TypeScript に不慣れでも設定の読み替えがしやすいか
-
-初期判断の目安:
-
-- 最小構成と設定の読みやすさを優先するなら `esbuild`
-- 開発体験、entry 管理、将来の拡張余地を少し広めに取りたいなら `Vite`
-
-bundler 決定後は、少なくとも次を実装に合わせて更新する。
-
-- `package.json`
-- `tsconfig.json`
-- `manifest.json`
-- build script 名
-- watch script 名
-- output directory 名
-- 必要なら `docs/implementation-workflow.md` 内の Phase 0 記述
 
 ## コードコメント方針
 
@@ -183,14 +158,16 @@ module 境界で判断が要る情報（失敗の扱い、所有権、呼�
 /**
  * 複数の cleanup を 1 つの disposer に合成する。
  *
- * @param disposeFns 合成する cleanup。undefined は無視する。
- * @returns すべての cleanup を登録の逆順で 1 回だけ実行する disposer。
+ * @param entries 合成する cleanup 関数または Disposable。null / undefined は無視する。
+ * @returns 呼び出し側が保持・実行する disposer。登録の逆順に各 cleanup を一度だけ試し、
+ *   途中で失敗しても残りを続ける。2 回目以降は何もしない。
+ * @throws 返した disposer の実行時に cleanup が失敗した場合、全件の試行後に AggregateError。
  */
-export function combineDisposers(
-  ...disposeFns: Array<DisposeFn | undefined>
-): DisposeFn {
+export const composeDisposers = (
+  ...entries: DisposeEntry[]
+): DisposeFn => {
   // ...
-}
+};
 
 /**
  * 必須要素を取得する。
@@ -867,15 +844,16 @@ readiness 待機と retry の実装を index へ移さない。
 build、拡張再読み込み、ページ再読み込みの具体的手順は、
 `testing-checklist.md` の「実行前提 > 手動スモーク前の準備」を参照する。
 
-### 今回の最小接続に含めないもの
+### Phase 4 の接続範囲に含めないもの
 
-- SubtitleBlock[] と history
+- `SubtitleBlock[]` と history
 - panel、layout、正式な ON/OFF UI
 - native menu 操作後の自動同期
 - popup 保存後の設定自動再読込
 
-対象外の機能は未対応として記録し、仕様上の要件を取り消さない。
-設定を変えた実機確認では、保存後にページを再読み込みしてから観測する。
+この一覧は Phase 4 の作業範囲であり、現在の実装状況を示すものではない。
+後続 Phase の要件は取り消さず、実装順は本書の該当 Phase を参照する。
+設定を変更した場合のブラウザ確認は、`docs/testing-checklist.md` の「手動スモーク前の準備」に従う。
 
 ### 未実装ファイルの扱い
 
@@ -902,8 +880,7 @@ build、拡張再読み込み、ページ再読み込みの具体的手順は、
 - Apple TV+ で track 採用、bind、cue 取得、停止時解除を確認する
 - 実機確認用フラグの使用状態を記録し、各フラグを false にする時期に無効化後の動作も確認する
 
-module テストの成功だけで、entry の分岐や実機動作を確認済みと扱わない。
-実行結果と未確認事項は testing-checklist に記録する。
+module のテスト成功だけで、entry の分岐やブラウザ上の動作を確認済みと扱わない。
 
 ## Phase 5: `SubtitleBlock[]` と current / past / future 導出
 

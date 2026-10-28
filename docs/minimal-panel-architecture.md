@@ -928,7 +928,7 @@ runtime state のうち、字幕 truth、UI state、layout state は同じ store
 - 保存設定の詳細な型・取得結果・validation は `docs/settings-spec.md` を参照する。
 - API は module 間の入力・出力・所有権・失敗条件を定義する。
 - 設計例と確定した API は区別して記載する。
-- 実装順と接続手順は `docs/implementation-workflow.md`、検証手順と結果は `docs/testing-checklist.md` で扱う。
+- 実装順と接続手順は `docs/implementation-workflow.md`、検証条件・期待動作・手順は `docs/testing-checklist.md` で扱う。
 
 ### `settings-store.ts`
 
@@ -1409,7 +1409,7 @@ primary が空の場合は、secondaryの正規化単位の入力順で片言語
 ```ts
 // 共通型は §18 を参照する。
 function deriveSubtitleHistory(
-  blocks: SubtitleBlock[],
+  blocks: readonly SubtitleBlock[],
   currentTime: number,
 ): SubtitleHistorySnapshot;
 ```
