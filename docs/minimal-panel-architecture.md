@@ -162,7 +162,7 @@ src/
 │  ├─ playback-root.ts
 │  │  └─ Apple TV+ 再生対象の discovery。root、video、panel mount target、layout target を解決する
 │  └─ session-lifecycle.ts
-│     └─ playback session の start / stop / dispose、subtitle readiness 待機、retry、restart request 集約を所有する
+│     └─ 処理 session の開始停止、controller の最終 dispose、readiness 待機・retry、target 再評価と restart 判断を所有する
 │
 ├─ subtitles/
 │  ├─ subtitle-source.ts
@@ -266,21 +266,25 @@ Apple TV+ 固有 selector の採用判断そのものは `docs/apple-tv-dom-stru
 
 ### `src/content/session-lifecycle.ts`
 
-playback session の唯一の owner とする。
+現在の処理 session と、その開始停止を制御する controller の owner とする。
+controller と、現在の再生対象に属する処理 session の寿命は区別する。
 
 責務は次の通りとする。
 
-- playback session の start / stop / dispose
+- 処理 session の開始停止と controller の最終 dispose
 - subtitle readiness 待機
 - readiness 待機中の retry / polling
-- restart request の収束
-- old session dispose と new session start の順序制御
+- target 再評価要求の収束
+- target の再解決・比較、restart 要否と理由の選択
+- 旧処理の終了と新処理の開始の順序制御
 - session owner module が返す `dispose()` の合成
-- restart reason ごとの再初期化判断
 - session 単位の runtime state の破棄
 
 `playback-root.ts` が返した target と video を受け取り、同じ video に対する readiness 待機を維持する。  
 readiness 待機中に video identity が変わった場合は、古い待機を dispose し、新しい video に対して待機を最初からやり直す。
+
+検出元と readiness retry は共通の target 再評価経路へ接続する。
+stop / dispose の契約は §12、restart の判断と理由対応は §13 を正本とする。
 
 ### `src/subtitles/subtitle-session.ts`
 
@@ -445,16 +449,22 @@ type ExtensionUiState = {
 
 `ui-state.ts` は字幕 truth、寸法、style、layout observer、layout timer、track、video を持たない。
 
+store は現在の処理 session より長く存続できる操作側 runtime として扱い、
+処理 session の start ごとに作り直さない。
+保存値の読込・保存は settings-store に委譲し、Storage API は直接扱わない。
+state の初期化・維持条件は §16 を参照する。
+
 ### `src/settings/settings-store.ts`
 
 保存設定の読み書きだけを担当する。
 
 - `primaryLang` の読込・保存
 - `secondaryLang` の読込・保存
+- 全作品共通の `extensionEnabled` の読込・保存
 - 最低限の validation
-- `chrome.storage.sync` との入出力
+- 担当する保存領域との入出力
 
-popup、候補言語、fallback、validation の詳細仕様は `docs/settings-spec.md` を正本とする。  
+popup、保存領域、未保存時の既定値、fallback、validation の詳細仕様は `docs/settings-spec.md` を正本とする。
 runtime state、readiness、session restart は扱わない。
 
 ### `src/shared/types.ts`
@@ -512,6 +522,10 @@ resource owner は必ず1つに限定する。
 - `on-off-toggle.ts` は ON/OFF toggle の DOM と controls binding を所有する
 - `panel-open-close-button.ts` は panel 開閉ボタンの DOM と controls binding を所有する
 - `ui-state.ts` は UI state とその購読機構を所有する
+
+購読解除関数は登録元が保持し、登録元の寿命が終了するときに実行する。
+処理 session に属する購読と、再開始を受け取る controller の公開購読は区別する。
+OFF から ON に戻す操作経路を、字幕処理 session の stop で失わせない。
 
 `session-lifecycle.ts` は個別 resource を直接解除しない。  
 各 module が返した `dispose()` を合成して、session 単位で一度だけ呼ぶ。
@@ -615,6 +629,11 @@ readiness 待機中に video identity が変わった場合は、古い待機を
 
 この readiness 待機の責務は `playback-root.ts` ではなく `session-lifecycle.ts` が持つ。
 
+同一 video の再確認では、待機開始時刻と retry 回数を維持する。
+新 video の待機では、待機開始時刻と retry 回数を初期化する。
+target の変化・消失の判断は §13 の共通再評価経路を使い、
+readiness retry に独立した restart 判断を持たせない。
+
 ---
 
 ## 11. `SubtitleBlock[]` と truth
@@ -647,7 +666,14 @@ readiness 待機中に video identity が変わった場合は、古い待機を
 
 playback session は、現在の Apple TV+ 再生対象に対して拡張機能が動く1回分の実行単位である。
 
-session は少なくとも次を所有する。
+controller は、その処理 session の開始停止を制御する。
+controller の stop は現在の処理 session を終了する操作であり、
+controller 自体の最終 dispose とは区別する。
+
+各 resource の生成・解除は担当 module が所有し、
+lifecycle は現在の処理 session に属する disposer を集約する。
+
+現在の処理 session に属するものは次とする。
 
 - 現在の playback target
 - 現在の `video`
@@ -657,26 +683,29 @@ session は少なくとも次を所有する。
 - cue listener
 - native menu binding
 - panel host
-- controls binding
+- 処理 session に属する controls binding
 - layout observer
 - session timer
 - session が所有する `MutationObserver` / `ResizeObserver`
-- `ui-state.ts` の small store
 - `player-layout.ts` が持つ layout state
 - cleanup disposer
+
+UI store と、OFF から ON に戻すための操作経路は、
+字幕処理 session の寿命とは分けて扱う。
+store の保持条件は §16、各購読の解除責任は §7 に従う。
 
 ### start の流れ
 
 ```txt
 index.ts
   ↓
-playback-root.ts で playback target を解決
+保存設定を読み、操作側 runtime の UI store を初期化・配線する
   ↓
-session-lifecycle.ts が session を生成
+操作 UI を接続する。OFF から ON に戻す経路は字幕処理の停止と分ける
   ↓
-ui-state.ts を作成
+session-lifecycle.ts が開始条件と現在 target を評価する
   ↓
-on-off-toggle.ts / panel-open-close-button.ts を mount
+有効な target に対する処理 session を開始する
   ↓
 panel-host.ts を mount
   ↓
@@ -697,19 +726,37 @@ subtitle-history.ts で current / past / future を導出
 panel-renderer.ts を初回描画
 ```
 
-### stop の原則
+### controller の stop / dispose
 
-停止時は `session-lifecycle.ts` が各 owner module の `dispose()` を逆順で集約する。  
-個別 resource の解放処理は module 側に閉じ込め、`session-lifecycle.ts` はそれらを合成して呼ぶだけにする。
+| 項目 | stop | dispose |
+|---|---|---|
+| 目的 | 現在の処理 session を終了する | controller を最終終了する |
+| 字幕接続・中継購読・readiness 待機 | 解放する | 解放する |
+| truth・history・active target / video / track 参照 | 解放する | 解放する |
+| controller の状態・字幕更新購読 | 維持する | 破棄する |
+| 新しい開始・購読 | 受け付ける | 受け付けない |
+| 最終通知 | 必要なクリア・停止通知を送る | 送らない |
+| 保存された ON/OFF | 変更しない | 変更しない |
 
-### dispose の原則
+stop 後に再利用するのは controller だけとする。
+終了した字幕接続・データ・古い DOM を再利用するために保持しない。
+処理 session に属する購読は、その owner が終了時に解除する。
 
-- 同じ resource を複数 module が解放しない
-- `dispose()` は複数回呼ばれても安全である
-- stop 済み session に update を流さない
-- playback 対象切替時は「旧 session dispose → 新 session start」の順序を崩さない
-- session が停止したら、session 内の subtitle truth、history snapshot、target / video / track 参照、UI state 購読を解放する
-- layout の style、observer、timer、計算済み state は `player-layout.ts` が解除する
+stop / dispose 後の getState は status:stopped、target:null、waiting:null とする。
+getSubtitleSnapshot は接続なしを表す null とする。
+外部の呼出元が既に取得して保持している参照まで解放できるとは保証しない。
+
+### cleanup の共通原則
+
+- 旧 callback を無効化し、active な保持先から資源を切り離してから cleanup を試す
+- 個別 resource の解除は各 owner が行い、lifecycle は disposer を逆順に集約する
+- 一部が失敗しても残りの解除・参照整理を継続し、失敗を記録する
+- 解除試行と実際の解除成功を区別する
+- 繰り返し呼出しで同じ cleanup を二重実行しない
+- 古い停止処理・通知・cleanup が、新しい処理 session を上書き・解除しない
+- layout の style、observer、timer、計算済み state は player-layout が解除する
+- 再開時は現在 target を再解決し、古い target を再開の正本にしない
+- panel だけを閉じる操作では controller の stop / dispose を呼ばない
 
 ---
 
@@ -718,7 +765,40 @@ panel-renderer.ts を初回描画
 開始・再初期化理由は §18 の `RestartReason` で共有する。
 
 DOM 上で観測した変化と、再初期化に使う理由コードは区別する。
-検出した変化をどの理由コードへ対応づけるかは、session lifecycle の責務として定義する。
+検出元は target の再評価を要求するだけとし、
+session-lifecycle が再解決・比較・restart 要否・理由選択・重複抑制・実行を所有する。
+playback-root は discovery と snapshot 比較を提供し、開始停止は行わない。
+content coordinator は入力と通知入口を配線し、判断の詳細を持たない。
+readiness retry も lifecycle の共通再評価経路を使う。
+
+### 再評価結果の扱い
+
+| 状況 | 扱い |
+|---|---|
+| 同一 target | 再開始しない。待機中なら現在の待機を維持する |
+| video identity の変更 | 旧処理を終了し、新 video で開始する |
+| 同一 video で root・mount・layout target が変更 | 旧処理を終了して再接続する |
+| target が解決できない | 旧処理・参照を解放し、対象なしでは開始しない |
+| target を再発見 | ON・設定 ready・controller 未破棄なら開始する |
+| 通常の cue 更新・native menu close | それ自体では全体 restart しない |
+
+### 理由コードの選択
+
+| 状況 | 理由コード |
+|---|---|
+| 初期起動時に対象あり | initial-start |
+| 対象なしから対象を発見 | playback-target-appeared |
+| 旧 target と比較でき、video identity が変更 | video-replaced |
+| 同一 video で root・mount・layout target が変更 | spa-navigation |
+| 明示的な再開始要求 | manual-restart |
+| 設定変更で全体再接続が必要 | settings-changed |
+
+- video と root の同時変更は video-replaced を優先する
+- 同一 target の再確認だけで restart reason を更新しない
+- 対象消失には新しい開始理由を無理に付けない
+- A → null → B で旧参照を解放済みなら、B は playback-target-appeared とする
+- 理由を揃えるために旧 DOM 参照を保持しない
+- 型に存在する理由コードだけを根拠に、全体 restart を必須にしない
 
 新しい理由コードを採用する場合は、検出元、既存コードとの対応、影響するテストを確認し、
 `src/shared/types.ts` と §18 を同時に更新する。
@@ -739,31 +819,42 @@ restart 時は、新 session を開始する前に旧 session が所有する re
 - native menu binding
 - panel host
 - layout observer
-- controls binding
+- 処理 session に属する controls binding
 - session が所有する timer
 - session が所有する `MutationObserver` / `ResizeObserver`
 - session 内で保持した subtitle truth と history snapshot
 - session 内で保持した target、video、track への参照
-- `ui-state.ts` の購読
+- 処理 session に属する UI state 購読
 
 restart の流れは次の通りとする。
 
 ```txt
 restart request 発生
   ↓
-RestartReason を確定
+現在 target と開始条件を再評価し、restart 要否・理由を確定
   ↓
-session-lifecycle.ts が旧 session の dispose 合成関数を一度だけ呼ぶ
+旧 callback を無効化し、旧接続・待機を保持先から切り離す
   ↓
-旧 session の参照を破棄
+各 owner の cleanup を試し、旧データ・参照を解放
   ↓
-playback-root.ts で現在 target を再解決
+再入・OFF・dispose を確認し、必要なら現在 target を再解決
   ↓
-新 session を start
+最新の有効 target で readiness 待機または新しい処理を開始
 ```
 
 restart request の収束は `session-lifecycle.ts` が所有する。  
 複数 module が個別に restart を発火して stop / start を始めない。
+
+処理中の再評価要求はまとめ、stop / start を入れ子にしない。
+OFF・dispose 後は保留中の開始を実行しない。
+旧 callback・停止処理・cleanup が新しい状態を変更しないよう世代を確認する。
+cleanup の完了は全解除試行と管理上の切離しの完了を指し、
+失敗した資源まで実際に消えたとは扱わない。
+
+restart は controller 自体の dispose ではない。
+保存された ON/OFF と、同じ視聴中に手動で変更した panel 開閉は維持する。
+restart reason や video identity だけで、新しい視聴と判定しない。
+新しい視聴の具体的な識別条件は未確定とし、確認後に本書と DOM 判断文書を整合させる。
 
 ---
 
@@ -838,7 +929,8 @@ panel は truth の読み取り結果を表示するだけであり、source 制
 
 対象は **拡張全体の enabled / disabled** だけとする。
 
-- OFF にすると、拡張由来の監視・字幕処理・panel 表示・layout 適用を止める
+- OFF にすると、字幕処理・panel 表示・layout 適用と、それらに必要な監視を止める
+- OFF から ON に戻すための操作経路は利用できるようにする
 - ON にすると、必要なら session 内処理を再始動する
 - panel open state の意味づけは持たない
 - `extensionEnabled` の更新を要求するだけであり、session 停止処理を直接実装しない
@@ -861,6 +953,12 @@ panel は truth の読み取り結果を表示するだけであり、source 制
 - OFF 中に panel を非表示にする場合も、それは session 側の反応として扱う
 - `ui-state.ts` が UI 意思を保持し、`player-layout.ts` が画面幾何を適用する
 
+協調側は、ON 操作時に panelOpen を true、OFF 操作時に false とする。
+ON の状態で新しい視聴を開始したときは panel を開く。
+panel の手動開閉では extensionEnabled とその保存値を変更しない。
+同じ視聴の技術的な再接続では panelOpen を維持する。
+閉じた panel を開き直す操作経路は、panel 非表示中も利用できるようにする。
+
 ---
 
 ## 16. 保存設定と runtime state
@@ -873,19 +971,21 @@ Chrome Storage に保存する。
 
 - `primaryLang`
 - `secondaryLang`
+- `extensionEnabled`
 
 これらは `settings-store.ts` が唯一扱う。
 
 初期版では次を保存しない。
 
-- extension enabled state
 - panel open state
 
-保存設定の候補、fallback、validation、popup での選択操作は `docs/settings-spec.md` を正本とする。
+保存領域、未保存時の既定値、復元、fallback、validation、popup の選択操作は
+`docs/settings-spec.md` を正本とする。
 
 ### runtime state
 
-現在の再生中だけメモリ上に持つ。
+現在の処理・表示・操作に必要な状態をメモリ上に持つ。
+操作側 runtime と、現在の処理 session に属する資源の寿命は区別する。
 
 - 現在の playback target
 - 現在の `video`
@@ -899,10 +999,15 @@ Chrome Storage に保存する。
 - layout 計算結果
 - 現在の playback session 参照
 
-初期版は毎回、次の state で始める。
+UI store は操作側 runtime が保持し、処理 session の start ごとに作り直さない。
+extensionEnabled は保存値を適用し、未保存時は true とする。
+ON 操作時と、ON の状態で新しい視聴を開始したときは panelOpen を true とする。
+OFF 操作時は panelOpen を false とする。
+視聴中の手動開閉と、同じ視聴の技術的再接続では §15 の規則を適用する。
 
-- `extensionEnabled = false`
-- `panelOpen = false`
+処理 session の stop / restart は、保存された ON/OFF を変更しない。
+UI store の購読は登録元の owner が解除し、最終終了後に旧購読を残さない。
+store 自体に target・video・track・字幕データを保持させない。
 
 ### UI state と layout state
 
@@ -938,8 +1043,10 @@ runtime state のうち、字幕 truth、UI state、layout state は同じ store
 
 保存設定の読込・保存・validation・normalization を提供する。
 
-- loadSettings は、正規化済み設定と ready / incomplete / error の状態を返す。
-- saveSettings は、保存成功、validation による拒否、書込失敗を結果として返す。
+- 言語設定の loadSettings は、正規化済み設定と ready / incomplete / error の状態を返す。
+- 言語設定の saveSettings は、保存成功、validation による拒否、書込失敗を結果として返す。
+- 全作品共通の ON/OFF の読込・保存は、言語設定の操作と相互上書きしない境界で扱う。
+- ON/OFF の保存領域・失敗時の扱い・取得結果型の詳細は settings-spec を参照する。
 - ready の primaryLang は有効な言語とし、secondaryLang は未選択の null を許容する。
 - 設定未完了の内部表現と、保存成功時のデータ形式を区別する。
 - ブラウザ言語の取得や fallback による track 採用は担当しない。
@@ -1587,19 +1694,24 @@ function createSessionLifecycle(
 ): SessionLifecycleController;
 ```
 
+上記の start は開始操作を示す。検出元からの再評価要求を受ける具体的な
+公開操作・引数は、§13 の責務境界に従って実装提案時に具体化する。
+検出元が target 比較・理由選択を行って start を繰り返す契約とはしない。
+
 - readiness 待機と retry は lifecycle が所有する。
 - 待機 bag は解除前に保持参照から切り離す。
 - 待機 cleanup の失敗は記録し、停止・再開始・破棄の後処理を継続する。
-- getState は state の外側と waiting 情報をコピーし、target と DOM 参照は共有する。
+- getState は state の外側と waiting 情報をコピーする。処理中の target と DOM 参照は共有するが、stop / dispose 後は target:null、waiting:null、status:stopped とする。
 - getSubtitleSnapshot は現在の字幕接続の getSnapshot に委譲する。接続なし・破棄後は null とし、接続中の空 snapshot と区別する。
 - lifecycle は字幕 truth や取得結果を保持・再コピーしない。データ境界は本節の subtitle-session API を参照する。
 - subscribeSubtitle は即時通知せず、接続後の初回・接続の更新・旧接続のクリアを引数なしで通知する。状態購読と診断観測とは分離する。
 - データ通知の購読者の例外は記録して後続を継続する。登録単位で冪等に解除し、通知中に解除した登録は呼ばず、新規登録は次の更新から扱う。
 - 接続解除前に参照を切り離し、世代を更新する。中継購読の解除から字幕接続の破棄の順にすべて試し、失敗は記録する。
 - 接続・データ通知の世代を確認し、旧 callback と、通知中の停止・再開始・新しい更新によって古くなった処理を継続しない。
-- controller の dispose では字幕データの購読者を解放し、最終通知を送らない。
-
+- stop は旧接続の参照を切り離した後に必要なクリア・停止通知を送り、controller の公開購読を維持する。
+- controller の dispose では状態・字幕データの購読者を解放し、最終通知を送らない。
 - dispose 後は新しい開始と購読を受け付けない。
+- 再開時は新しく解決した target を使い、終了した処理 session の target を保持して再利用しない。
 
 §12〜§13 は session 全体の接続・restart・cleanup の責務と順序を定義する。
 本節は、その制御に用いる controller の公開 API を定義する。
@@ -1611,9 +1723,13 @@ function createSessionLifecycle(
 `src/shared/types.ts` では、module 境界で共有する最低限の型を定義する。
 本節はその共通型を定義する場所とし、§17 では再定義せず参照する。
 
-StoredSettings は未完了を表現できる内部共通型である。
+StoredSettings は言語設定の未完了を表現できる内部共通型である。
 保存成功時の必須条件と、settings store が返す ReadySettings は
 `docs/settings-spec.md` を参照する。
+
+全作品共通の ON/OFF の保存値と、runtime の ExtensionUiState は区別する。
+ON/OFF の取得結果型は settings-spec の未決事項を確定してから具体化し、
+以下の言語設定型へ無条件に追加しない。
 
 ```ts
 export type StoredSettings = {
@@ -1764,7 +1880,7 @@ export type PlaybackSessionState =
     }
   | {
       status: 'stopped';
-      target: PlaybackTarget | null;
+      target: null;
       waiting: null;
       reason: RestartReason | null;
     };

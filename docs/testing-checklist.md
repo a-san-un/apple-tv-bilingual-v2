@@ -152,9 +152,9 @@ npm run test
 - ネイティブ字幕 UI で、少なくとも primary 候補と secondary 候補が存在するコンテンツを使う。
 - 手動スモークテストは、原則として typecheck、lint、test がすべて成功してから開始する。
 - 不具合調査時は、debug log または health snapshot で設定、採用 track、current subtitle、session 状態、layout 状態、UI state を観測できる状態を用意する。
-- 初期版では `extension enabled state` と `panel open state` は保存されない。通常起動の確認では、毎回 OFF / closed で始まることを確認する。
+- 通常起動は、ON/OFF 未保存・保存 ON・保存 OFF を分けて確認する。期待値は settings-spec §11 に従い、panel 開閉状態そのものは保存しない。
 - 開発用の自動 ON を使うブラウザ確認は、通常起動の確認と分ける。フラグの役割・使用条件・無効化時期は `implementation-workflow.md` の「開発用・ブラウザ確認用フラグ」に従う。
-- 開発用フラグを使った場合は、その名前・値と確認範囲を実施結果に記録する。自動 ON での確認を、通常起動の OFF 開始や正式な ON/OFF toggle の確認済みとして扱わない。
+- 開発用フラグを使った場合は、その名前・値と確認範囲を実施結果に記録する。自動 ON での確認を、未保存時の既定 ON、保存値の復元、正式な ON/OFF toggle の確認済みとして扱わない。
 - 診断表示を有効にした確認と、無効にした確認を区別して記録する。
 - 保存設定と runtime state を混同しない前提で確認する。
 
@@ -200,6 +200,9 @@ npm run test
 - `secondaryLang` 未選択時に `null` として扱えること。
 - 読み込み時に不正値を正規化できること。
 - 保存設定と runtime state が混ざらないこと。
+- popup の言語保存が extensionEnabled を変更しないこと。
+- ON/OFF の保存が primaryLang / secondaryLang を変更しないこと。
+- panelOpen と UI state 全体の snapshot を保存しないこと。
 
 手動スモークで確認する項目:
 1. popup を開く。
@@ -212,9 +215,10 @@ npm run test
 8. `primaryLang` と同じ値を `secondaryLang` に設定しようとしたとき、UI または保存処理で弾かれることを確認する。
 
 期待結果:
-- 保存設定として保持されるのは `primaryLang` と `secondaryLang` だけである。
-- `extension enabled state` と `panel open state` は保存されない。
-- 再読込後も設定値だけが復元され、起動状態は毎回 OFF 開始になる。
+- popup の保存操作が更新するのは primaryLang と secondaryLang だけである。
+- 全作品共通の extensionEnabled は別の保存操作で扱い、popup の保存で上書きしない。
+- panel open state は保存されない。
+- 再読込後は言語設定と保存された ON/OFF を復元し、未保存時の ON/OFF は既定値に従う。
 
 実施タイミング:
 - settings 実装直後
@@ -437,21 +441,23 @@ panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / 
 - ON/OFF 操作で `extensionEnabled` が更新されること。
 - 同じ値を連続設定しても不要な通知増殖がないこと。
 - OFF 時に panel 表示用状態と拡張有効状態を混同しないこと。
+- 未保存と保存 false を区別し、保存 false を既定 ON で上書きしないこと。
+- 作品別・エピソード別の ON/OFF 保存を作らないこと。
+- ON 操作時に panel を開き、panel の手動開閉では ON/OFF 保存を行わないこと。
 
 手動スモークで確認する項目:
-1. 再生ページを開いた直後の状態を確認する。
-2. 初期状態が OFF であることを確認する。
-3. ON に切り替える。
-4. 拡張由来の監視、字幕処理、panel 表示が開始されることを確認する。
-5. OFF に切り替える。
-6. 拡張由来の監視、描画、字幕処理が停止し、panel が非表示または unmount されることを確認する。
-7. 再度 ON に切り替える。
-8. 二重初期化なしで正常に再開することを確認する。
+1. ON/OFF 未保存の条件を用意し、設定 ready の再生画面で ON・panel open になることを確認する。
+2. OFF に切り替え、字幕処理・panel 表示・layout 適用と、それらに必要な監視が停止することを確認する。
+3. OFF から ON に戻す操作経路が残ることを確認する。
+4. 別作品・別話へ移動し、ページ再読み込み後も OFF が復元されることを確認する。
+5. ON に切り替え、panel が開き、二重初期化なしで処理が始まることを確認する。
+6. 別作品・別話へ移動し、ページ再読み込み後も ON が復元されることを確認する。
+7. ブラウザ再起動後も、最後に保存した ON/OFF が復元されることを確認する。
 
 期待結果:
 - ON/OFF toggle は拡張機能全体の有効 / 無効だけを切り替える。
 - panel の開閉状態とは別に動作する。
-- OFF 後に listener や DOM が残留しない。
+- OFF 後に終了した字幕処理 session の listener・DOM を残さず、ON に戻す操作経路と区別する。
 
 実施タイミング:
 - ON/OFF toggle 実装直後
@@ -472,8 +478,8 @@ panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / 
 
 手動スモークで確認する項目:
 1. 拡張を ON にする。
-2. panel を閉じた状態から開始する。
-3. 開閉ボタンで panel を開く。
+2. panel が開いていることを確認し、開閉ボタンで閉じる。
+3. 閉じた状態でも開く操作ができることを確認し、再び開く。
 4. 右側 panel が表示され、再生画面領域との分割が適用されることを確認する。
 5. 再度ボタンを押して panel を閉じる。
 6. panel が消え、レイアウトが元に戻ることを確認する。
@@ -482,6 +488,9 @@ panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / 
 期待結果:
 - 開閉ボタンは panel の表示状態だけを切り替える。
 - 拡張全体の ON/OFF 状態は変化しない。
+- panel を閉じても字幕処理 session を stop / dispose しない。
+- panel 開閉の保存要求を出さない。
+- 同じ視聴の技術的再接続では手動 close を維持する。
 - 連続操作でも二重描画やレイアウト破綻が起きない。
 
 実施タイミング:
@@ -496,19 +505,22 @@ panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / 
 
 unit test で確認する項目:
 - `getState()` が初期状態を返すこと。
-- 初期状態が `extensionEnabled = false`、`panelOpen = false` であること。
+- 初期入力を反映でき、未保存時の既定値と保存済み値の復元を接続テストで区別できること。
 - `setExtensionEnabled()` が state を更新すること。
 - `setPanelOpen()` が state を更新すること。
 - `subscribe()` で購読できること。
 - unsubscribe 後に通知されないこと。
 - listener が複数いても全員に同じ state が渡ること。
 - state 更新順が予測可能であること。
-- session 単位で生成・破棄できることを前提に、外部保存へ依存しないこと。
+- store 自身が Storage API を扱わず、処理 session の start ごとに ON/OFF を初期化しないこと。
+- 購読解除を登録元が所有し、操作側 runtime の終了後に旧購読を残さないこと。
 
 small integration test で確認する項目:
 - ON/OFF toggle と接続したときに `extensionEnabled` が反映されること。
 - panel 開閉ボタンと接続したときに `panelOpen` が反映されること。
 - layout や renderer が subscribe 経由で更新できること。
+- ON 操作時と新しい視聴開始時の panel 初期表示を、技術的再接続時の状態維持と区別すること。
+- 新しい視聴の識別条件が未確認の場合は、その経路の確認を完了扱いにしないこと。
 
 実施タイミング:
 - `ui-state.ts` 実装直後
@@ -527,6 +539,9 @@ small integration test で確認する項目:
 - textTracks が 0 件の間は waiting とし、字幕接続を生成しないこと。
 - readiness 通過後に、対象 video に対する字幕接続を生成すること。
 - waiting 中の video 差し替えで、旧待機を停止し、新 video を対象にすること。
+- 同一 video の再確認では startedAt を維持し、retryCount を継続すること。
+- 新 video では startedAt と retryCount を初期化すること。
+- DOM 通知と retry が同じ変化を検出しても、有効な待機・接続を二重生成しないこと。
 - stop / dispose 後に、旧 retry が字幕接続を生成しないこと。
 - 再開始後に旧 retry が実行されても、新しい待機や字幕接続へ干渉しないこと。
 - source 自身は readiness 待機・retry を行わないこと。
@@ -537,7 +552,7 @@ small integration test で確認する項目:
 - [ ] waiting 中に再確認され、`video.textTracks.length > 0` になった後に session が開始される。
 - [ ] track が一部だけの途中状態でも、source、listener、panel host が重複しない。
 - [ ] ready 到達後に primary / secondary track を解決できる。
-- [ ] waiting 中に拡張を OFF にした場合、retry、timer、observer が停止する。
+- [ ] waiting 中に拡張を OFF にした場合、字幕処理の待機に属する retry、timer、observer が停止する。
 - [ ] panel または debug UI が `dialog.playback-view` 配下に mount され、再生画面内で見える。
 - [ ] 作品切替または新しい video への切替後に、古い UI、listener、waiting 状態が残らない。
 - [ ] 再生終了または戻る操作後に、panel または debug UI が通常ページへ残らない。
@@ -655,13 +670,13 @@ small integration test で確認する項目:
 
 手動スモークで確認する項目:
 - [ ] 旧 video の disconnect または新 video への replacement を検出できる。
-- [ ] video replacement による再初期化では、restart reason として `video-replaced` を確認できる。
+- [ ] 旧 target と比較可能な video identity 変更では video-replaced を確認する。A → null → B で旧参照を解放済みなら、B は playback-target-appeared として確認する。
 - [ ] 旧 video の disconnect は観測事実として記録し、再初期化理由コードとは区別する。理由コードは architecture の `RestartReason` に従う。
 - [ ] restart 前に旧 session の track binding が解除される。
 - [ ] restart 前に旧 session の cue listener が解除される。
 - [ ] restart 前に native menu binding が解除される。
 - [ ] restart 前に panel host が unmount される。
-- [ ] restart 前に layout observer と controls binding が解除される。
+- [ ] restart 前に旧処理 session に属する layout observer と controls binding が解除される。
 - [ ] restart 前に session timer、`MutationObserver`、`ResizeObserver` が解除される。
 - [ ] 新 session 開始後、panel host が 1 つだけ存在する。
 - [ ] 新 session 開始後、同じ cue が二重描画されない。
@@ -669,9 +684,9 @@ small integration test で確認する項目:
 - [ ] readiness 待機中にさらに video が差し替わっても、最後に検出した video だけで session が開始される。
 
 期待結果:
-- 同じ playback root が維持されていても、video DOM node が差し替われば旧 session を dispose して再初期化する。
+- 同じ playback root でも video identity が変われば旧処理 session を終了する。controller 自体は dispose せず、有効条件を満たす新 target で再開する。
 - video を識別する文字列が同じでも、別 node であれば同一 session とみなさない。
-- restart は旧 session の cleanup 完了後に新 video の readiness 待機へ移る。
+- restart は旧処理の解除試行と参照切離しを終え、再入・OFF・dispose を確認してから、新 video の readiness 待機へ移る。解除失敗を実際の解除成功とは扱わない。
 - cleanup は旧 session の resource だけを対象とし、新 session の resource に影響しない。
 - 最終的に有効な video に対する session、panel host、listener、observer だけが 1 組存在する。
 
@@ -692,7 +707,7 @@ small integration test で確認する項目:
 - `src/controls/panel-open-close-button.ts`
 
 手動スモークで確認する項目:
-- [ ] playback root disconnect 時に restart request が発行される。
+- [ ] playback root disconnect 時に再評価要求が送られ、lifecycle が対象消失・差し替え・開始条件を判断する。
 - [ ] SPA target change 時に旧 session の cleanup が一度だけ実行される。
 - [ ] target change 後に新しい root / video を再解決できる。
 - [ ] root が維持され video だけ差し替わる場合にも再初期化できる。
@@ -704,6 +719,11 @@ small integration test で確認する項目:
 - restart request が重複しても、旧 session の cleanup は一度だけ実行される。
 - 新しい root または video に対して session を再構築できる。
 - restart 中の ON/OFF 操作でも、source、listener、observer、panel host、controls が重複しない。
+- 同一 target の再評価だけでは旧処理を終了しない。
+- 対象消失時は旧 target を解放し、対象なしでは開始しない。
+- root・mount・layout target のみの変更も、video 変更と区別して判定する。
+- OFF・dispose 後は保留中の開始要求を実行しない。
+- 技術的 restart は保存 ON/OFF と手動の panel 開閉を変更しない。
 
 実施タイミング:
 - `playback-root.ts` または `session-lifecycle.ts` の変更時
@@ -739,6 +759,14 @@ small integration test で確認する項目:
 - lifecycle の停止・再開始・直接 dispose で、保持する旧字幕接続の cleanup を一度だけ試すこと。
 - 待機 retry の解除が失敗しても、lifecycle の停止・再開始・直接 dispose の後処理が進むこと。
 - unbind / unmount / unsubscribe が二重呼び出しに耐えること。
+- stop / dispose 後の getState が status:stopped、target:null、waiting:null であること。
+- stop / dispose 後の getSubtitleSnapshot が null であること。
+- stop 後は controller の公開購読を維持し、新 target の start と更新を受け取れること。
+- dispose は状態・字幕データの購読を破棄し、最終通知・新しい開始・新規購読を行わないこと。
+- 処理 session に属する中継購読・UI state 購読は、各 owner が終了時に解除すること。
+- 通知中の再開始を古い stop の後続処理が上書きせず、旧 cleanup が新接続を解除しないこと。
+- stop / dispose / restart が、保存された ON/OFF を変更しないこと。
+- badge の DOM 不在と旧 target 参照の非保持を、別々に確認すること。
 
 失敗ケースの test double では、「すべての解除を試したこと」と
 「すべての解除に成功したこと」を区別する。
@@ -758,7 +786,7 @@ callback 内では取得結果などを観測し、期待値・正常終了・�
 7. OFF 後に字幕更新ログや UI 更新ログが流れ続けないことを確認する。
 
 期待結果:
-- listener、timer、observer、track binding、DOM、runtime state が session 単位で解放される。
+- 処理 session に属する listener、timer、observer、track binding、DOM、データ・参照が解放される。操作側 runtime と controller の公開購読の寿命は architecture §12・§16 に従う。
 - 同じ UI が二重に mount されない。
 - current subtitle の更新が二重発火しない。
 - session 停止後に旧 resource が動き続けない。
@@ -781,7 +809,8 @@ callback 内では取得結果などを観測し、期待値・正常終了・�
 
 回帰確認項目:
 - popup 設定の保存と再読込が壊れていない。
-- 起動時に OFF 開始である。
+- ON/OFF 未保存時は ON、保存済みなら最後に選んだ値を復元する。
+- 作品・エピソード変更や技術的再接続で保存 ON/OFF を変更せず、panel 開閉を永続保存しない。
 - 設定が incomplete / error の場合、字幕接続を開始しない。
 - 同一 target の再評価だけで、不要な session 再開始や字幕接続の再生成が起きない。
 - debug UI 自身の DOM 更新で、再評価と再開始を繰り返さない。
@@ -792,7 +821,7 @@ callback 内では取得結果などを観測し、期待値・正常終了・�
 - `SubtitleBlock[]` の current / past / future 導出が壊れていない。
 - 再生、一時停止後に字幕表示が復帰する。
 - `textTracks.length === 0` を waiting state として扱い、ready 到達後にだけ subtitle source を開始する。
-- readiness 待機中に OFF へ切り替えた場合、retry、timer、observer が停止する。
+- readiness 待機中に OFF へ切り替えた場合、字幕処理の待機に属する retry、timer、observer が停止する。
 - seek は restart reason ではなく、session identity、track binding、panel host、layout observer、native menu listener を維持する。
 - seek 後に current / past / future が現在位置へ復帰し、重複描画が発生しない。
 - native subtitle menu の切替では、`TextTrack.mode === "showing"` を優先して primary / secondary track を再解決する。
@@ -904,16 +933,16 @@ DOM 残留がある場合は、Elements の状態も残す。
 
 手順 1:
 - popup で `primaryLang` と `secondaryLang` を設定する。
-- 再読込して設定値だけが保持されることを確認する。
-- 期待結果: 設定値は保持されるが、起動状態は毎回 OFF で始まる。
+- 再読込して言語設定が保持され、ON/OFF は未保存時の既定値または保存済み値に従うことを確認する。
+- 期待結果: 言語保存で ON/OFF を上書きせず、panel 開閉状態は復元しない。
 
 手順 2:
-- Apple TV+ 再生画面で拡張を ON にする。
+- Apple TV+ 再生画面で ON 状態を確認する。保存 OFF の場合は toggle で ON にする。
 - `textTracks.length === 0` の待機があっても error にならず、ready 到達後に session が開始されることを確認する。
 - 期待結果: readiness 待機中に resource は重複せず、ready 後に primary / secondary が解決される。
 
 手順 3:
-- panel を開く。
+- ON 操作時または新しい視聴開始時に panel が開くことを確認する。
 - primary / secondary 字幕が表示され、current / past / future が更新されることを確認する。
 - 期待結果: panel host は 1 つだけ存在し、二重描画がない。
 
@@ -934,15 +963,17 @@ DOM 残留がある場合は、Elements の状態も残す。
 
 手順 7:
 - 別エピソードまたは次話へ遷移する。
-- 期待結果: 旧 session が cleanup され、新 session で正常に再初期化される。
+- 期待結果: 旧処理 session が cleanup され、ON/OFF を変更せず新対象で正常に開始される。ON の新しい視聴では panel が開く。
+- 新しい視聴の識別条件を確認できなかった場合、panel 初期表示の経路は未確認として残す。
 
 手順 8:
 - root 維持のまま video が差し替わるケースを確認する。
-- 期待結果: restart reason を記録しつつ、最後の有効 video に対してだけ session が開始される。
+- 期待結果: architecture の理由選択に従い、最後の有効 video だけで開始する。同じ視聴の技術的再接続では手動の panel 開閉を維持する。
 
 手順 9:
 - OFF に切り替える。
-- 期待結果: 拡張由来の監視、描画、字幕処理、retry、timer、observer が停止し、DOM 残留や二重 listener がない。
+- 期待結果: 字幕処理・panel 表示・layout 適用と、それらに属する監視・待機が停止する。ON に戻す操作経路は残り、終了した処理 session の DOM 残留・二重 listener がない。
+- 別作品への移動とページ再読み込み後も OFF を復元することを確認する。
 
 ## 設計変更を要する発見
 

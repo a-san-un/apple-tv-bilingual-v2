@@ -108,16 +108,21 @@ OFF の間は、拡張由来の字幕処理・監視・描画は停止し、pane
 
 ### 5.4 起動時と状態の初期方針
 
-- 初期版では起動時は毎回 OFF で開始する
-- 初期版では `extension enabled state` を保存しない
-- 初期版では `panel open state` を保存しない
-- 初期版では起動時の panel は毎回 closed で開始する
+- 拡張全体の ON/OFF 状態を、全作品共通の1つの設定として保存する
+- ON/OFF の保存値がない場合は、ON を既定値とする
+- 保存値がある場合は最後に選んだ ON/OFF を復元し、作品・エピソードの変更では変更しない
+- ページ再読み込み・ブラウザ再起動後も、保存された ON/OFF を復元する
+- 拡張を ON にしたとき、および ON の状態で新しい視聴を開始したときは、panel を開く
+- 視聴中は、拡張を ON にしたまま panel だけを開閉できる
+- panel の開閉状態は保存しない
+- 同じ視聴の技術的な再接続では、手動で変更した panel の開閉状態を維持する
 
 ### 5.5 再初期化と cleanup
 
 - 再生停止、再初期化、再生対象切替時に session 単位で cleanup できる
 - listener、timer、observer、track binding、DOM、runtime state を解放できる
-- 前の再生対象の state を次の再生へ持ち越さない
+- 前の再生対象に属する字幕データ、DOM、video・track 参照などを次の再生へ持ち越さない
+- 全作品共通の ON/OFF 設定は、再生対象の終了・変更・再初期化では変更しない
 
 実装の進め方は `docs/implementation-workflow.md`、確認観点は `docs/testing-checklist.md` で定義する。
 
@@ -135,7 +140,6 @@ OFF の間は、拡張由来の字幕処理・監視・描画は停止し、pane
 - UI ライブラリ導入を前提にした設計
 - 過度な見た目調整や装飾目的の UI 強化
 - Apple TV+ 固有の複雑な補助機能を広く先取りすること
-- ON/OFF 状態の永続化
 - panel 開閉状態の永続化
 
 この文書では、アーキテクチャ詳細、設定の詳細仕様、実装手順、テスト詳細は扱わない。
@@ -174,7 +178,8 @@ OFF の間は、拡張由来の字幕処理・監視・描画は停止し、pane
 
 - listener、timer、observer、track binding、DOM、runtime state の解放責任が曖昧でないこと
 - 前 session の参照が残り続けないこと
-- OFF 時に拡張由来の監視・描画・字幕処理を停止できること
+- OFF 時に字幕処理・panel 表示・layout 適用と、それらに必要な監視を停止できること
+- OFF から ON に戻すための操作経路は利用できること
 
 ### 8.3 責務分離
 
@@ -209,7 +214,10 @@ OFF の間は、拡張由来の字幕処理・監視・描画は停止し、pane
 
 - 学習言語必須、母国語任意、同一言語禁止、ブラウザ言語 fallback が成立している
 - `primaryLang` / `secondaryLang` を保存設定として扱えている
-- ON/OFF 状態と panel 開閉状態を保存せず、毎回 OFF / closed で開始する
+- ON/OFF 状態を全作品共通で保存し、未保存時は ON、保存済みの場合は最後に選んだ値を復元する
+- ON にしたときと、ON の状態で新しい視聴を開始したときに panel を開く
+- panel の開閉状態を保存せず、視聴中は拡張を ON にしたまま panel だけを開閉できる
+- 同じ視聴の技術的な再接続では、手動の panel 開閉を維持する
 - primary / secondary 字幕から `SubtitleBlock[]` を構築し、panel 表示へ使えている
 - panel 表示時に 7:3 レイアウトを適用できる
 - OFF、再初期化、再生対象切替時に cleanup が成立する

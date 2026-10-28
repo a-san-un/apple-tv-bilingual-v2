@@ -122,15 +122,19 @@
 
 ## 4. session と再初期化
 
-- `src/content/session-lifecycle.ts` は playback session の開始・停止・dispose を一元管理する
-- `src/content/session-lifecycle.ts` は readiness 待機、retry、restart request の収束を所有する
+- `src/content/session-lifecycle.ts` は処理 session の開始停止と controller の最終 dispose を一元管理する
+- DOM の検出元は再評価を要求し、lifecycle が現在 target の再解決・比較・restart 要否・理由選択・重複抑制・実行を所有する
+- readiness retry も lifecycle の共通再評価経路を使う
 - 再初期化候補は SPA target change、playback root disconnect、video disconnect、video replacement とする
-- 開始・再初期化理由は `docs/minimal-panel-architecture.md` §18 の `RestartReason` に従い、DOM 上の契機と理由コードの値を区別する
-- video disconnect または video replacement を検出したら、旧 session を停止し、新 video の readiness を待って session を開始する
+- 理由コードの型は `docs/minimal-panel-architecture.md` §18、選択規則と実行順序は同文書 §13 を参照する
+- DOM 上の契機だけで restart や新しい視聴を確定しない
+- 対象消失時は旧処理・参照を解放し、現在の有効 target がある場合だけ開始条件と readiness を評価する
 - seek は session 再生成の契機にしない
 - seek 自体を理由に既存 track binding を作り直さない。history の時刻更新と source 更新による truth 再構築の区別は、`docs/minimal-panel-architecture.md` §13 を参照する
 - listener、observer、timer、track binding、拡張 DOM の owner は 1 つに限定する
-- session の停止時は、track binding、cue listener、native menu binding、layout observer、panel host、controls をそれぞれの owner から確実に dispose する
+- 処理 session に属する track binding、cue listener、native menu binding、layout observer、panel host、controls binding は、それぞれの owner が cleanup する
+- OFF から ON に戻す操作経路と操作側 runtime は、字幕処理 session の寿命と区別する。詳細は architecture §12・§15〜§16 を参照する
+- cleanup の解除試行と成功を区別し、失敗後も残りの解除・参照整理を継続する
 - SPA 遷移、再描画、seek の詳細観測は `docs/apple-tv-dom-observations.md` を参照する
 
 ### DOM 契機と再初期化の扱い
@@ -145,14 +149,18 @@
 | native menu close | menu binding の解放契機であり、session restart とは区別する |
 
 理由コードの定義は `docs/minimal-panel-architecture.md` §18 を参照する。
-この表では、検出・理由選択・開始停止を担当する module の分担を定義しない。
+この表は観測契機を整理するものであり、restart の確定条件や理由対応を再定義しない。
+検出元は再評価要求までとし、判断・理由選択・開始停止は同文書 §13 に従って lifecycle が行う。
+
+video identity や restart reason だけでは、新しい視聴と技術的な再接続を区別しない。
+その具体的な識別条件は未確認であり、確認前に恒久的な selector や判定規則を追加しない。
 
 ## 5. module への反映
 
 | module | Apple TV+ 固有の責務 |
 | --- | --- |
-| `src/content/playback-root.ts` | playback root、video、`textTracks`、panel 注入先候補、layout 基準領域の解決 |
-| `src/content/session-lifecycle.ts` | session 開始・停止・dispose、video replacement 検出、readiness 待機、再初期化判定の配線 |
+| `src/content/playback-root.ts` | playback root、video、panel 注入先候補、layout 基準領域の discovery と target snapshot 比較 |
+| `src/content/session-lifecycle.ts` | target 再評価、restart 要否・理由選択、重複要求の収束、処理 session の開始停止、readiness 待機、controller の最終 dispose |
 | `src/subtitles/native-menu-sync.ts` | native menu の探索、同期、listener cleanup、RAF後の track 再解決要求 |
 | `src/subtitles/text-track-resolver.ts` | track の正規化と採用判定 |
 | `src/panel/panel-host.ts` | panel host の生成・mount・unmount |

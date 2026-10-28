@@ -116,7 +116,7 @@ TypeScript に不慣れでも、各 module の役割、依存、session と clea
  * 拡張全体の ON/OFF と字幕 panel の開閉を含む
  * runtime UI state を small store として保持・通知する。
  * 字幕 truth や layout 計算そのものは担当しない。
- * playback session 単位で生成・破棄される前提で使う。
+ * 現在の処理 session と寿命を分け、開始停止のたびに作り直さない。
  */
 ```
 
@@ -412,10 +412,12 @@ obvious な処理を行単位で説明するコメントは増やさない。
 
 #### `src/settings/settings-store.ts`
 
-- `chrome.storage.sync` の読込・保存 API を実装する
+- 言語設定の読込・保存 API を実装し、保存領域は settings-spec に従う
 - `primaryLang` 必須、`secondaryLang` 任意、同値禁止の前提を吸収する
 - `secondaryLang` 未選択時の fallback 実装は settings store に寄せすぎず、設定値正規化の範囲に留める
-- `extension enabled state` と `panel open state` は保存対象に含めない
+- 全作品共通の ON/OFF の保存境界は settings-spec に従い、言語保存と相互上書きしない形にする
+- panel open state と処理資源の runtime state は保存しない
+- ON/OFF の操作 UI との接続は Phase 7 で扱う
 
 ### 完了条件
 
@@ -577,8 +579,10 @@ obvious な処理を行単位で説明するコメントは増やさない。
   - `setExtensionEnabled(enabled)`
   - `setPanelOpen(open)`
   - `subscribe(listener)`
-- 初期値は `extensionEnabled = false`、`panelOpen = false` とする
-- 保存設定を持ち込まず、runtime UI state だけを扱う
+- 読み込まれた ON/OFF と表示開始条件を適用できる、runtime UI state の初期化境界を用意する
+- store は Storage API を直接扱わず、保存値の読込・保存は settings-store に委譲する
+- store と現在の処理 session の寿命を分け、処理 session の start ごとに ON/OFF を初期化しない
+- 初期化・状態維持の契約は architecture §16、保存値と未保存時の既定値は settings-spec §11 に従う
 
 ##### `src/content/playback-root.ts`
 
@@ -595,7 +599,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 
 ##### `src/ui/ui-state.test.ts`
 
-- 初期値が `extensionEnabled = false`、`panelOpen = false` であることを確認する
+- 初期入力を反映でき、製品の起動・復元条件と store 単体の初期化を混同しないことを確認する
 - 各 setter が state を更新することを確認する
 - `subscribe()` が更新通知を受け取り、unsubscribe 後は通知されないことを確認する
 
@@ -642,7 +646,8 @@ obvious な処理を行単位で説明するコメントは増やさない。
 
 ##### `src/content/session-lifecycle.ts`
 
-- session の start / stop / dispose の骨格を作る
+- 処理 session の開始停止と controller の最終 dispose の骨格を作る
+- stop 後の再開始、dispose 後の開始・購読禁止、停止後の参照解放は architecture §12 に従う
 - readiness 待機、retry、旧待機停止をここが所有する
 - `video.textTracks.length === 0` を失敗ではなく waiting state として扱う
 - 新しい `HTMLVideoElement` の直後は `textTracks.length === 0` になり得る前提で待機制御を入れる
@@ -655,12 +660,14 @@ const isSubtitleReady = (video: HTMLVideoElement): boolean =>
 
 - 3-A で用意した playback target snapshot を比較し、video identity の変化を検出する
 - readiness 待機中に video が差し替わった場合は、旧待機と旧 listener を dispose してから新 video を監視する
+- 新 video では待機開始時刻と retry 回数を初期化し、同一 video の再確認では維持する
 - `RestartReason` の型を導入し、再初期化理由を後続フェーズでも共有できるようにする
 - session stop 時に登録済み disposer を一度だけ実行する土台を作る
 
 ##### `src/content/index.ts`
 
-- settings 読込、playback root 解決、session lifecycle 起動、top-level error handling だけを担当する
+- settings 読込、target 再評価入口の配線、session lifecycle 起動、top-level error handling だけを担当する
+- target 比較・restart 要否・理由選択は lifecycle へ委譲する
 - polling、DOM observer の詳細、readiness retry の実装詳細を置かない
 - 3-A の `PlaybackTarget` snapshot と 3-B の lifecycle を接続する薄い coordinator に留める
 
@@ -675,6 +682,8 @@ const isSubtitleReady = (video: HTMLVideoElement): boolean =>
 - ready な video で次の session 開始へ進めることを確認する
 - readiness 待機中に video identity が変化した場合、旧待機と旧 listener を停止することを確認する
 - stop / dispose を複数回呼んでも cleanup が一度だけ実行されることを確認する
+- stop 後の公開購読維持と再開始、dispose 後の購読破棄・開始禁止を区別して確認する
+- stop / dispose 後の target:null・waiting:null・字幕接続なしを確認する
 
 #### 完了条件
 
@@ -1011,6 +1020,9 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - `src/controls/panel-open-close-button.ts`
 - `src/layout/player-layout.ts`
 - `src/ui/ui-state.ts`
+- `src/settings/settings-store.ts`
+- `src/settings/settings-store.test.ts`
+- `src/content/index.ts`
 - `src/panel/panel-host.ts`
 - `src/content/playback-root.ts`
 - `src/content/session-lifecycle.ts`
@@ -1042,17 +1054,24 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 - toggle / button / session の接続で必要な更新通知を調整する
 - store の責務を超えて DOM を持たない
+- 全作品共通の ON/OFF の復元と、保存しない panel 開閉を区別する
 
 #### `src/content/session-lifecycle.ts`
 
-- `extensionEnabled = false` のときに監視・描画・字幕処理を止める
+- `extensionEnabled = false` のときに字幕処理・panel 表示・layout 適用と、それらに必要な監視を止める
+- OFF から ON に戻す操作経路は維持する
 - `panelOpen = false` のときに panel 表示と layout 適用を止める
 - ON/OFF toggle と開閉ボタンの役割差を崩さない接続にする
+- ON 操作時と新しい視聴開始時の panel 初期表示、技術的再接続時の維持は architecture に従う
+- 保存された ON/OFF を、処理 session の停止・再接続で変更しない
 
 ### 完了条件
 
 - ON/OFF toggle で拡張全体の有効 / 無効を切り替えられる
+- ON/OFF が全作品共通で保存・復元され、未保存時の既定値に従う
+- 言語保存と ON/OFF 保存で互いの値を上書きしない
 - 開閉ボタンで panel 表示だけを切り替えられる
+- panel 開閉を保存せず、OFF 後も ON に戻せる
 - panel を開くと 7:3 layout が適用される
 - resize 時に layout が再計算される
 - UI state と layout state が分離されている
@@ -1072,7 +1091,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 ### 目的
 
-- session 単位の start / stop / dispose を実運用レベルに固める
+- 処理 session の開始停止と controller の最終 dispose を、実運用レベルに固める
 - restart request を `session-lifecycle.ts` に集約する
 - リーク、二重 bind、古い DOM 残留、旧 video 参照残りを防ぐ
 
@@ -1095,17 +1114,11 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - 開始・再初期化理由は `docs/minimal-panel-architecture.md` §18 の `RestartReason` に従う
 - video の disconnect・replacement、playback root の disconnect、SPA target change という契機と、理由コードの値を区別する
 
-- restart 手順を固定する
-
-1. restart request を `session-lifecycle.ts` に集約する
-2. 旧 session が持つ disposer を一度だけ実行する
-3. track binding、cue listener、native menu binding、panel host、layout observer、controls binding、timer、observer を解除する
-4. 古い target / video / track 参照を破棄する
-5. 新しい root / video を解決する
-6. 新 video の `textTracks.length > 0` を待つ
-7. 新 session を開始する
-
-- video replacement 時は、旧 session をdisposeしてから新 video の readiness を待つ
+- restart の判断・理由対応・順序は architecture §13 に従って実装し、ここでは再定義しない
+- DOM の検出元と readiness retry を共通再評価経路へ接続する
+- 同一 target の重複通知、対象消失、直接の差し替え、再入、OFF、dispose を分けて確認する
+- controller 自体の dispose と、旧処理 session の終了を混同しない
+- 新しい視聴の識別条件が未確定の場合は、restart reason や video identity だけで代用しない
 - seek は restart 契機にしない
 
 #### 関連 module
@@ -1114,7 +1127,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - `native-menu-sync.ts` で native menu binding を解除する
 - `panel-host.ts` で panel DOM を unmount する
 - `player-layout.ts` で layout observer を解除する
-- `on-off-toggle.ts` と `panel-open-close-button.ts` で controls binding を解除する
+- 各 controls module が、その寿命を終える binding を解除する。字幕処理の停止と、ON に戻す操作経路の終了は区別する
 - `shared/dispose.ts` は disposer が二重実行されない前提を補助する
 
 ### 完了条件
@@ -1223,12 +1236,13 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 ### 自動 ON：`DEBUG_AUTO_ENABLE_SUBTITLES`
 
-- 正式な ON/OFF toggle を実装するまでは true を維持し、後続 Phase のブラウザ確認にも使う
-- 保存設定が ready の場合だけ、起動時に extension enabled state を true にする
+- 正式な ON/OFF toggle と保存状態の復元経路へ移行するまでは、ブラウザ確認の暫定起動手段として維持する
+- 言語設定が ready の場合だけ有効化する暫定経路と、製品仕様の「ON/OFF 未保存時は ON」を区別する
 - panel を開くフラグではない
 - 正式な ON/OFF toggle の実装・検証完了とは扱わない
 - ブラウザ確認のたびに false へ戻す必要はない
-- 正式な ON/OFF toggle の実装時に false に戻し、toggle による開始・停止と通常起動を検証する
+- 保存状態の復元を接続するときは、保存済み OFF をこのフラグで上書きしない
+- 正式な ON/OFF toggle の実装時に false に戻し、未保存時 ON・保存値復元・操作による開始停止を検証する
 
 ### 診断表示：`DEBUG_SESSION_BADGE`
 
@@ -1244,8 +1258,8 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - 出力内容と観測手順は `docs/testing-checklist.md` の「再生経路への接続の確認」を参照する
 
 3フラグとも storage に保存しない。
-通常起動を OFF / closed とする製品仕様は変更せず、
-開発中の自動 ON を暫定的な起動手段として区別する。
+製品の起動・復元仕様は settings-spec §11 に従う。
+開発用フラグによる起動は暫定経路であり、保存・復元や正式 UI の確認とは区別する。
 
 フラグを変更した後は再 build し、拡張とページを再読み込みする。
 具体的な手順は `docs/testing-checklist.md` の「実行前提 > 手動スモーク前の準備」を参照する。

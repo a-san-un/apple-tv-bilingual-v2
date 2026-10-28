@@ -16,6 +16,9 @@ v2 の設定 UI は、字幕表示に必要な最小の保存設定だけをユ�
 - 学習言語
 - 母国語
 
+これらとは別に、再生画面の ON/OFF toggle で選んだ拡張全体の有効状態を、
+全作品共通の保存設定として扱う。popup に ON/OFF 項目は追加しない。
+
 設定仕様は次の方針に従う。
 
 - 学習言語は必須
@@ -23,7 +26,8 @@ v2 の設定 UI は、字幕表示に必要な最小の保存設定だけをユ�
 - 母国語には学習言語と同じ値を選べない
 - 母国語が未選択のときはブラウザ言語を fallback とする
 - 保存設定と runtime state は混ぜない
-- 保存先は `chrome.storage.sync` を基本とする
+- 言語設定の保存先は `chrome.storage.sync` を基本とする
+- ON/OFF の保存・復元と panel 開閉の非保存は §11 に従う
 - 設定の読込・保存は `src/settings/settings-store.ts` に寄せる
 - 実際の字幕 track 解決は content 側の `src/subtitles/text-track-resolver.ts` が担当する
 - `settings-store.ts` と popup の担当者が、他文書を読まなくても基本仕様を実装できる状態を目指す
@@ -37,7 +41,7 @@ v2 の設定 UI は、字幕表示に必要な最小の保存設定だけをユ�
 - popup UI の要件
 - 学習言語と母国語の選択仕様
 - 言語候補一覧の扱い
-- `primaryLang` と `secondaryLang` の保存形式
+- `primaryLang`、`secondaryLang`、`extensionEnabled` の保存境界
 - Chrome Storage の利用方針
 - デフォルト値と fallback
 - バリデーション
@@ -203,16 +207,18 @@ Apple TV+ の生の track 情報、track 解決ロジック、表示ラベル、
 
 ### 7.1 保存キー
 
-保存設定のキーは次の 2 つを正本とする。
+保存設定のキーは次の 3 つを正本とする。
 
 | キー | 型 | 必須 | 意味 |
 | --- | --- | --- | --- |
 | `primaryLang` | `string` | 必須 | 学習言語 |
 | `secondaryLang` | `string \| null` | 任意 | 母国語。未選択を許可する |
+| `extensionEnabled` | `boolean` | 未保存を許可 | 全作品共通の拡張 ON/OFF。未保存時は ON |
 
 ### 7.2 保存データ型
 
-v2 では、母国語未選択を空文字ではなく `null` で表現する。
+以下は、言語設定の保存成功時のデータ形式である。
+母国語未選択は空文字ではなく `null` で表現する。
 
 ```ts
 export type StoredSettings = {
@@ -220,6 +226,10 @@ export type StoredSettings = {
   secondaryLang: string | null;
 };
 ```
+
+`extensionEnabled` の保存値は、これとは別に boolean として扱う。
+キーの欠落は、値が false であることとは区別する。
+言語設定と ON/OFF を、同じ保存要求や同じ取得結果型へまとめることは要求しない。
 
 この方針により、次の区別が明確になる。
 
@@ -229,6 +239,8 @@ export type StoredSettings = {
 - 不正な空文字や型崩れ
 
 ### 7.3 保存例
+
+言語設定の保存例を示す。ON/OFF の保存操作は言語保存と分離する。
 
 母国語を明示指定した場合:
 
@@ -248,19 +260,31 @@ export type StoredSettings = {
 }
 ```
 
+ON/OFF を明示的に保存する場合:
+
+```json
+{
+  "extensionEnabled": false
+}
+```
+
+この例は ON/OFF の保存操作の対象キーだけを示す。
+言語設定を削除・置換する操作を意味しない。
+
 ### 7.4 保存対象の最小化
 
-初期版で `chrome.storage.sync` に保存するのは `primaryLang` と `secondaryLang` だけとする。
+初期版の保存対象は `primaryLang`、`secondaryLang`、`extensionEnabled` とする。
+言語保存は言語の2キーだけ、ON/OFF 保存は `extensionEnabled` だけを更新し、
+互いの保存値を上書きしない。
 
 次の値は初期版では保存しない。
 
-- `extension enabled state`
 - `panel open state`
 - 現在採用中の track 情報
 - 現在の `SubtitleBlock[]`
 - 現在表示中の字幕 block
 - panel 内の表示位置
-- `UI state`（`extensionEnabled`、`panelOpen`）
+- UI state 全体の snapshot
 - `layout state`
 - listener / timer / observer / binding の登録状態
 
@@ -270,14 +294,16 @@ export type StoredSettings = {
 
 ### 8.1 保存先
 
-保存設定の保存先は `chrome.storage.sync` を基本とする。
+言語設定の保存先は `chrome.storage.sync` を基本とする。
+ON/OFF の保存領域は `sync` / `local` の詳細判断を保留とする。
+全作品共通の永続化は確定事項だが、端末間共有の有無は未確定である。
 
 Chrome Storage は Chrome 拡張機能が使う設定保存領域である。  
 ローカルファイルや `localStorage` を設定の正本として使わない。
 
 ### 8.2 非採用方針
 
-初期版では、設定保存に次を使わない。
+初期版では、言語設定の保存に次を使わない。
 
 - `localStorage`
 - ファイル保存
@@ -289,19 +315,23 @@ Chrome Storage は Chrome 拡張機能が使う設定保存領域である。
 
 Storage からの読込、型補正、旧形式値の吸収、保存前後の正規化は `src/settings/settings-store.ts` が引き受ける。
 
-popup は storage API を直接細かく扱わず、`settings-store.ts` を経由して設定を読む。
+popup と content 側は storage API の詳細を持たず、
+`settings-store.ts` を経由して、それぞれが必要な保存設定を読む。
 
 ### 8.4 書込責務
 
 Storage への書込も `src/settings/settings-store.ts` に寄せる。
 
-popup は保存要求を出す UI であり、永続化の詳細、migration、型補正、保存形式の正規化を持たない。
+popup は言語設定、再生画面の ON/OFF toggle は有効状態の変更を要求する。
+いずれも永続化の詳細、migration、型補正、保存形式の正規化を持たない。
+ON/OFF の保存要求と処理 session の開始停止との接続責務は architecture を参照する。
 
 ### 8.5 読み込み失敗時と旧形式値の扱い
 
 `settings-store.ts` は、storage 値の内容だけでなく storage API の読み込み失敗にも耐える必要がある。
 
-初期版では次の方針を採る。
+言語設定の読込では、初期版は次の方針を採る。
+ON/OFF の未保存時の扱いと、読込・保存失敗時の未決事項は §11.3 を参照する。
 
 - `chrome.storage.sync` の読み込み自体が失敗した場合、設定取得は失敗として扱う
 - 読み込み失敗時、popup は保存済み設定を表示できない状態としてエラー表示する
@@ -367,7 +397,7 @@ fallback は runtime の解決にだけ使い、`chrome.storage.sync` の `secon
 
 ### 10.1 バリデーション対象
 
-保存前と読込後の両方で、最低限次を検証する。
+言語設定は、保存前と読込後の両方で、最低限次を検証する。
 
 - `primaryLang` が文字列であること
 - `primaryLang` が空文字でないこと
@@ -376,6 +406,10 @@ fallback は runtime の解決にだけ使い、`chrome.storage.sync` の `secon
 - `secondaryLang` が文字列の場合は空文字でないこと
 - `secondaryLang` が文字列の場合は候補一覧に含まれること
 - `secondaryLang` が文字列の場合は `primaryLang` と異なること
+
+ON/OFF の保存要求・保存済み値は boolean として検証する。
+キー欠落による未保存と、存在する値の型不正は区別する。
+型不正時の fallback は未決事項とし、未保存時の既定 ON をそのまま適用すると決めない。
 
 ### 10.2 popup 側のバリデーション
 
@@ -427,56 +461,74 @@ fallback の受け渡しは §9.3、設定取得結果の型は §14 を参照�
 
 ### 11.1 保存設定
 
-保存設定として扱うのは次だけである。
+保存設定として扱うのは次の3つとする。
 
-- `primaryLang`
-- `secondaryLang`
+- `primaryLang`: popup で選ぶ学習言語
+- `secondaryLang`: popup で選ぶ母国語
+- `extensionEnabled`: 再生画面の ON/OFF toggle で選ぶ、拡張全体の有効状態
 
-これらは popup から編集でき、`chrome.storage.sync` に保存される。
+ON/OFF は作品別・エピソード別に保存せず、全作品共通の1つの値を保持する。
+保存領域の扱いは §8.1 を参照する。
 
 ### 11.2 runtime state
 
-runtime state は再生中だけ使う一時状態であり、保存しない。
+現在の処理・表示に必要な一時状態は、runtime で保持する。
 
-例:
-
-- 現在の `extension enabled state`
-- 現在の `panel open state`
+- 保存設定を適用した現在の `extensionEnabled`
+- 現在の `panelOpen`
 - 現在の playback session
 - 現在解決済みの primary / secondary track
 - 現在の `SubtitleBlock[]`
 - 現在表示中の current block
 - listener / timer / observer / binding の登録状態
 
-### 11.3 初期版の UI state 方針
+保存する ON/OFF の値と、runtime の UI state 全体は区別する。
+`panelOpen`、字幕データ、DOM・video・track 参照、資源の登録状態は保存しない。
 
-初期版では、次の UI state を保存しない。
+### 11.3 ON/OFF の保存・復元と panel の初期表示
 
-- ON/OFF 状態
-- panel open state
+- ON/OFF の保存キーがない場合は、ON を既定値とする。
+- 保存済みの場合は最後に選んだ値を復元する。
+- OFF にした後は、ユーザーが ON に変更するまで、どの作品でも OFF を維持する。
+- ON にした後は、ユーザーが OFF に変更するまで、どの作品でも ON を維持する。
+- 作品・エピソードの変更、処理 session の停止・再初期化では、保存された ON/OFF を変更しない。
+- ページ再読み込み・ブラウザ再起動後も、保存された ON/OFF を復元する。
+- ON にしたとき、および ON の状態で新しい視聴を開始したときは、panel を開く。
+- ON のまま panel だけを開閉でき、その操作で ON/OFF の保存値を変更しない。
+- panel の開閉状態は保存しない。
+- 同じ視聴の技術的な再接続では、手動で変更した panel の開閉状態を維持する。
 
-起動時は毎回 OFF 開始とする。  
-panel open state は保存しないため、起動時は毎回 closed で開始する。
+ON はユーザーの有効化意思を表す。
+ON であっても、言語設定の完了や処理開始条件を満たしたことを意味しない。
 
-前回 session の ON/OFF 状態や panel の open / close 状態を復元してはならない。
+未決事項:
 
-### 11.4 保存しない理由
+- ON/OFF の読込失敗、型不正、保存失敗時の詳細動作は、実装前に確定する。
+- 新しい視聴と技術的な再接続の具体的な識別条件は未確定とする。
+  restart reason や video identity だけで新しい視聴と断定しない。
 
-runtime state は現在の再生対象、DOM、video、track、panel の存在に依存する一時状態である。
+### 11.4 保存する意思と、保存しない処理状態
 
-これらを保存すると、再起動後や別の再生対象で古い状態を復元してしまい、状態不整合や cleanup 漏れの原因になる。  
-そのため Chrome Storage には、再生対象に依存しないユーザー設定だけを保存する。
+拡張を使うかどうかは、再生対象に依存しないユーザーの意思として保存する。
+
+panel の一時的な開閉、字幕データ、DOM・video・track 参照、
+listener / timer / observer / binding は現在の処理・表示に属するため保存しない。
+
+ON/OFF を復元することと、古い処理資源を復元・保持することは別である。
 
 ### 11.5 architecture へ委ねる範囲
 
-runtime state の詳細な保持先と更新責務は本書では定義しない。
-
-本書で固定するのは、それらを保存設定として `chrome.storage.sync` に保存しないことだけである。  
-詳細な owner、保持単位、cleanup、再初期化責務は architecture 文書の担当範囲とする。
+本書は、保存対象・未保存時の既定値・復元・panel 非保存を定義する。
+runtime の owner、購読の寿命、stop / dispose、restart の責務と順序は
+`docs/minimal-panel-architecture.md` を参照する。
 
 ---
 
 ## 12. 設定変更時の content 側への反映方針
+
+§12.1〜§12.6 は、popup で保存した言語設定の反映を扱う。
+ON/OFF の保存・復元は §11、操作と開始停止の接続は architecture を参照する。
+言語設定の反映手順を、そのまま ON/OFF 操作の保存・反映順序として適用しない。
 
 ### 12.1 反映の原則
 
@@ -540,7 +592,10 @@ popup は content の内部更新手順を知らない。
 - `SubtitleBlock[]` 構築の開始
 - 設定完了前提の playback session 開始
 
-この状態で content 側が行ってよいのは、設定未完了として待機することと、設定変更後の再読込を受け付けることだけとする。
+この状態では字幕処理を開始せず、設定未完了として待機し、
+設定変更後の再読込を受け付ける。
+全作品共通の ON/OFF の保持・変更を、字幕処理の開始成功と混同しない。
+設定未完了を理由に、保存された ON/OFF を書き換えない。
 
 ### 12.6 反映失敗時の扱い
 
@@ -578,7 +633,8 @@ popup は次を持たない。
 `src/settings/settings-store.ts` の責務は次の通りとする。
 
 - 保存キーの正本管理
-- `chrome.storage.sync` の read / write
+- 言語設定と ON/OFF の保存領域への read / write
+- 言語保存と ON/OFF 保存で、互いのキーを上書きしない入出力境界
 - 保存形式の正規化
 - 旧形式値の吸収
 - 読込時と保存時のバリデーション
@@ -612,7 +668,10 @@ export type StoredSettings = {
 };
 ```
 
-これは storage に保存される正本形式である。
+これは言語設定の保存成功時の正本形式である。
+ON/OFF の保存値は boolean とし、未保存を許容する。
+その取得結果型・API は、未保存・読込失敗・型不正の扱いを確定してから具体化する。
+この型へ `panelOpen` や runtime の資源状態を追加しない。
 
 ### 14.2 正規化済み設定と runtime fallback
 
@@ -634,6 +693,9 @@ export type ReadySettings = {
 - fallback 候補も採用結果も storage へ書き戻さない。
 
 ### 14.3 設定取得結果モデル
+
+以下は言語設定の取得結果モデルである。
+言語設定の ready / incomplete と、ON/OFF の保存値の有無は別に扱う。
 
 ```ts
 export type SettingsLoadResult =
@@ -664,7 +726,8 @@ export type SettingsLoadResult =
 
 型と受け渡しの両方で、次の分離を崩さない。
 
-- 保存成功時のデータ形式: §14.1 の保存設定モデル
+- 言語設定の保存成功時のデータ形式: §14.1 の保存設定モデル
+- 全作品共通の ON/OFF: boolean の保存値。未保存時の既定値は §11.3 に従う
 - 未完了を含む内部共通型: `ExtensionSettings`
 - track 解決へ進める正規化済み設定: `ReadySettings`
 - 設定取得状態: `SettingsLoadResult`
@@ -681,7 +744,6 @@ export type SettingsLoadResult =
 - 言語ごとの優先順位リスト保存
 - 複数候補による track fallback の保存
 - 自動検出結果の保存
-- 字幕表示 ON/OFF の永続化
 - panel open state の永続化
 - エピソード単位の上書き設定
 - サイト別設定
@@ -713,12 +775,16 @@ export type SettingsLoadResult =
 - popup で扱う項目が `primaryLang` / `secondaryLang` の 2 つに限定されている
 - 学習言語必須、母国語任意、同一値禁止が明記されている
 - 候補言語一覧と track 解決の責務分離が明記されている
-- 保存形式として `primaryLang` / `secondaryLang` が定義されている
-- 保存先が `chrome.storage.sync` であると明記されている
+- 保存対象として `primaryLang` / `secondaryLang` / `extensionEnabled` が定義されている
+- 言語設定の保存先と、ON/OFF の保存領域の確定・保留が区別されている
 - `secondaryLang` 未選択時のブラウザ言語 fallback が明記されている
 - 保存設定と runtime state の境界が明記されている
-- ON/OFF 状態と panel open state を保存しないことが明記されている
-- 起動ごとに extension が OFF、panel が closed で始まることが明記されている
+- ON/OFF は全作品共通で保存し、panel open state は保存しないことが明記されている
+- ON/OFF 未保存時は ON、保存済みの場合は最後に選んだ値を復元することが明記されている
+- ON 操作時と、ON の状態で新しい視聴を開始したときの panel 初期表示が明記されている
+- 技術的な再接続で手動の panel 開閉を変更しないことが明記されている
+- 言語保存と ON/OFF 保存が互いの保存値を上書きしないことが明記されている
+- ON/OFF の失敗時動作と、新しい視聴の識別条件の未決事項が明示されている
 - 旧形式値、破損値、Storage 読込失敗時の扱いが明記されている
 - `primaryLang` 未設定時に content 側が playback session を開始しないことが明記されている
 - popup と `settings-store.ts` の責務境界が明記されている
