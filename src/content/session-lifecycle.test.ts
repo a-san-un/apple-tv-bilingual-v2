@@ -642,12 +642,17 @@ describe('session-lifecycle の字幕データ境界', () => {
     try {
       lifecycle.subscribeSubtitle(listener);
       lifecycle.start(createTarget(1));
+      // cleanup が例外を捕捉するため、解除時点の取得結果は戻り値で観測する。
+      /** @returns 旧中継購読を解除する時点の字幕取得結果。 */
       data.unsubscribe.mockImplementation(() => {
-        expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+        const snapshot = lifecycle.getSubtitleSnapshot();
         data.operations.push('unsubscribe');
         data.fire();
+        return snapshot;
       });
       lifecycle.stop();
+      expect(data.unsubscribe).toHaveReturnedTimes(1);
+      expect(data.unsubscribe).toHaveLastReturnedWith(null);
       expect(listener).toHaveBeenCalledTimes(2);
       expect(listener).toHaveLastReturnedWith(null);
       expect(data.operations).toEqual(['unsubscribe', 'dispose']);

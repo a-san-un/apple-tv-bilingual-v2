@@ -1909,7 +1909,9 @@ describe('subtitle-session のデータ更新購読', () => {
     it('即時通知せず、更新後の状態を引数なしのcallbackから取得できる', () => {
         const { options, video, en } = createFixture();
         const session = createSubtitleSession(options);
-        const listener = vi.fn(() => { expect(session.getSnapshot().history.current).toBeNull(); });
+        // assertion の失敗を購読者例外として捕捉させないため、外側で戻り値を検証する。
+        /** @returns 通知時点の字幕データの写し。 */
+        const listener = vi.fn(() => session.getSnapshot());
         try {
             session.subscribe(listener);
             expect(listener).not.toHaveBeenCalled();
@@ -1919,6 +1921,25 @@ describe('subtitle-session のデータ更新購読', () => {
             video.fire('timeupdate');
             expect(listener).toHaveBeenCalledTimes(1);
             expect(listener).toHaveBeenCalledWith();
+            expect(listener).toHaveReturnedTimes(1);
+            expect(listener).toHaveLastReturnedWith({
+                blocks: [{
+                    startTime: 1,
+                    endTime: 2,
+                    primaryText: 'en subtitle',
+                    secondaryText: 'ja subtitle',
+                }],
+                history: {
+                    current: null,
+                    past: [],
+                    future: [{
+                        startTime: 1,
+                        endTime: 2,
+                        primaryText: 'en subtitle',
+                        secondaryText: 'ja subtitle',
+                    }],
+                },
+            });
             expect(copies).not.toHaveBeenCalled();
             expect(build).not.toHaveBeenCalled();
         } finally { session.dispose(); }
@@ -2031,7 +2052,9 @@ describe('subtitle-session のデータ更新購読', () => {
         const { options, video } = createFixture();
         const session = createSubtitleSession(options);
         let once = false;
-        const next = vi.fn(() => { expect(session.getSnapshot().history.current).toBeNull(); });
+        // assertion の失敗を購読者例外として捕捉させないため、外側で戻り値を検証する。
+        /** @returns 通知時点の字幕データの写し。 */
+        const next = vi.fn(() => session.getSnapshot());
         try {
             session.subscribe(() => {
                 if (once) return;
@@ -2042,19 +2065,49 @@ describe('subtitle-session のデータ更新購読', () => {
             session.subscribe(next);
             video.fire('timeupdate');
             expect(next).toHaveBeenCalledTimes(1);
+            expect(next).toHaveReturnedTimes(1);
+            expect(next).toHaveLastReturnedWith({
+                blocks: [{
+                    startTime: 1,
+                    endTime: 2,
+                    primaryText: 'en subtitle',
+                    secondaryText: 'ja subtitle',
+                }],
+                history: {
+                    current: null,
+                    past: [],
+                    future: [{
+                        startTime: 1,
+                        endTime: 2,
+                        primaryText: 'en subtitle',
+                        secondaryText: 'ja subtitle',
+                    }],
+                },
+            });
         } finally { session.dispose(); }
     });
 
     it('予期しないbuilder例外でもクリア後に通知し、例外の区別を維持する', () => {
         const { options, en, logger } = createFixture();
         const session = createSubtitleSession(options);
-        const listener = vi.fn(() => { expect(session.getSnapshot().blocks).toEqual([]); });
+        // assertion の失敗を購読者例外として捕捉させないため、外側で戻り値を検証する。
+        /** @returns 通知時点の字幕データの写し。 */
+        const listener = vi.fn(() => session.getSnapshot());
         const error = new Error('unexpected build failure');
         try {
             session.subscribe(listener);
             vi.spyOn(blockBuilder, 'buildSubtitleBlocks').mockImplementationOnce(() => { throw error; });
             en.fireCueChange();
             expect(listener).toHaveBeenCalledTimes(1);
+            expect(listener).toHaveReturnedTimes(1);
+            expect(listener).toHaveLastReturnedWith({
+                blocks: [],
+                history: { current: null, past: [], future: [] },
+            });
+            expect(logger.error).toHaveBeenCalledWith(
+                'subtitle truth update failed',
+                { error },
+            );
             expect(logger.error).toHaveBeenCalledWith('subtitle source listener failed', expect.objectContaining({ error }));
         } finally { session.dispose(); }
     });
