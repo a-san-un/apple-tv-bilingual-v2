@@ -823,3 +823,83 @@ describe('session-lifecycle の字幕データ境界', () => {
     expect(data.dispose).toHaveBeenCalledTimes(1);
   });
 });
+
+/** stop と最終 dispose で、target の解放と公開購読の寿命を区別する。 */
+describe('session-lifecycle の停止後参照', () => {
+  it.each([
+    { method: 'stop' as const, trackCount: 0 },
+    { method: 'dispose' as const, trackCount: 0 },
+    { method: 'stop' as const, trackCount: 1 },
+    { method: 'dispose' as const, trackCount: 1 },
+  ])('$method は trackCount=$trackCount の target を保持しない',
+    /**
+     * waiting / running のどちらから終了しても参照が残らないことを検証する。
+     * @param scenario 終了操作と readiness 用 track 件数。
+     */
+    ({ method, trackCount }) => {
+      const scheduler = createRetryScheduler();
+      const lifecycle = createSessionLifecycle({ doc: document, scheduleRetry: scheduler.schedule });
+      try {
+        const target = createTarget(trackCount);
+        lifecycle.start(target);
+        expect(lifecycle.getState().target).toBe(target);
+        lifecycle[method]();
+        expect(lifecycle.getState()).toEqual({ status: 'stopped', target: null, waiting: null, reason: null });
+        expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+        lifecycle[method]();
+        expect(lifecycle.getState().target).toBeNull();
+      } finally {
+        // waiting の予約も次のケースへ持ち越さない。
+        lifecycle.dispose();
+      }
+    },
+  );
+
+  it('stop 後は公開購読を維持して新 target を受け付け、dispose 後は受け付けない',
+    /** stop と最終 dispose の公開購読・再利用の契約を検証する。 */
+    () => {
+      const subtitle = { settings: { primaryLang: 'en', secondaryLang: 'ja' } };
+      const first = createSubtitleDataMock('first');
+      const second = createSubtitleDataMock('second');
+      createSubtitleSessionMock.mockReturnValueOnce(first.session).mockReturnValueOnce(second.session);
+      const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+      const states = vi.fn();
+      const updates = vi.fn();
+      try {
+        lifecycle.subscribe(states);
+        lifecycle.subscribeSubtitle(updates);
+        lifecycle.start(createTarget(1));
+        lifecycle.stop();
+        expect(lifecycle.getState().target).toBeNull();
+        expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+        states.mockClear();
+        updates.mockClear();
+        const nextTarget = createTarget(1);
+        lifecycle.start(nextTarget);
+        expect(lifecycle.getState().target).toBe(nextTarget);
+        expect(lifecycle.getSubtitleSnapshot()?.history.current?.primaryText).toBe('second');
+        expect(states).toHaveBeenCalledTimes(1);
+        expect(updates).toHaveBeenCalledTimes(1);
+        first.fire();
+        expect(updates).toHaveBeenCalledTimes(1);
+        second.fire();
+        expect(updates).toHaveBeenCalledTimes(2);
+        states.mockClear();
+        updates.mockClear();
+        lifecycle.dispose();
+        lifecycle.subscribe(states)();
+        lifecycle.subscribeSubtitle(updates)();
+        lifecycle.start(nextTarget);
+        first.fire();
+        second.fire();
+        expect(states).not.toHaveBeenCalled();
+        expect(updates).not.toHaveBeenCalled();
+        expect(createSubtitleSessionMock).toHaveBeenCalledTimes(2);
+        expect(lifecycle.getState()).toEqual({ status: 'stopped', target: null, waiting: null, reason: null });
+        expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+      } finally {
+        lifecycle.dispose();
+      }
+    },
+  );
+});

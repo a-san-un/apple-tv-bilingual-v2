@@ -70,32 +70,17 @@ export type SessionLifecycleOptions = {
 };
 
 /**
- * 開始前または停止中の state を作る。
+ * DOM 参照を持たない開始前・停止後の state を作る。
  *
- * @param status idle または stopped。
- * @param target 停止対象の target。開始前は null。
- * @returns waiting を持たない state。
+ * @param status 開始前は idle、終了後は stopped。
+ * @returns target・waiting・reason を保持しない非稼働 state。
  */
-function createInactiveState(status: 'idle', target: null): SessionState;
-function createInactiveState(
-  status: 'stopped',
-  target: PlaybackTarget | null,
-): SessionState;
-function createInactiveState(
-  status: 'idle' | 'stopped',
-  target: PlaybackTarget | null,
-): SessionState {
-  if (status === 'idle') {
-    return {
-      status: 'idle',
-      target: null,
-      waiting: null,
-      reason: null,
-    };
-  }
-
-  return { status: 'stopped', target, waiting: null, reason: null };
-}
+const createInactiveState = (status: 'idle' | 'stopped'): SessionState => ({
+  status,
+  target: null,
+  waiting: null,
+  reason: null,
+});
 
 /**
  * 待機中の state を作る。
@@ -229,7 +214,7 @@ export const createSessionLifecycle = (
           options.subtitle.fallbackSecondaryLang ?? null,
       };
 
-  let state: SessionState = createInactiveState('idle', null);
+  let state: SessionState = createInactiveState('idle');
   let subtitleSession: SubtitleSession | null = null;
   let subtitleSessionBag: DisposeBag | null = null;
   let subtitleGeneration = 0;
@@ -536,7 +521,8 @@ export const createSessionLifecycle = (
     if (disposed || generation !== subtitleGeneration) return;
     waitingBagHolder.dispose();
     if (disposed || generation !== subtitleGeneration) return;
-    setState(createInactiveState('stopped', state.target));
+    // 終了した target を再開用に保持せず、次回 start の入力だけを使う。
+    setState(createInactiveState('stopped'));
   };
 
   return {
@@ -580,7 +566,8 @@ export const createSessionLifecycle = (
       releaseSubtitleSession();
       waitingBagHolder.dispose();
       listeners.clear();
-      state = createInactiveState('stopped', state.target);
+      // 最終終了後は状態取得からも旧 target の DOM 参照を返さない。
+      state = createInactiveState('stopped');
     },
 
     /**
