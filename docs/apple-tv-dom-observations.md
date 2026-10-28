@@ -497,7 +497,7 @@ dialog.playback-view
 
 ### 観測条件
 
-- ユーザーがApple TV+ページのDevToolsで取得し、本会話に貼り付けた比較ログを確認した。作品名は未記録。
+- ユーザーがApple TV+ページのDevToolsで取得し、本会話に貼り付けた比較ログを確認した。対象作品は「ブラザーズ」シーズン1・エピソード4（2026-10-28にユーザーが補足）。
 - 再生時刻: 561.034888秒、paused:true、seeking:false。拡張のblockCountは391。
 - 日本語: index 79、subtitles、ja、showing、読込み済み372cue。
 - 英語: index 274、captions、en、hidden、読込み済み57cue。
@@ -522,3 +522,49 @@ dialog.playback-view
 - 同時刻の分割がすべての作品・trackで発生するとは断定しない。
 - 同時刻正規化と後続評価の仕様は、minimal-panel-architectureのbuilder APIを正本とする。
 - 本記録は変更前の実機観測であり、正規化の実装・テスト・変更後の実機確認が完了したことを示さない。
+
+## 2026-10-27〜28: 英語cue一覧の変化と再生画面の終了・再接続
+
+### 観測条件
+
+- 対象作品: 「ブラザーズ」シーズン1・エピソード4。作品情報はユーザー申告。
+- Apple TV+のDevToolsでユーザーが取得したConsoleログ・画像・確認用コードの出力を確認した。ブラウザ・OSのバージョンは未記録。
+- 設定ログ: primaryLangはen-GB、secondaryLangはja。
+- 観測時の英語はindex 274、captions、en、hidden。日本語はindex 79、subtitles、ja、showing。indexは観測時点の値であり、永続識別子ではない。
+- 読取りだけのConsoleコードでtrack.cuesを取得した。観測コードによるtrack.modeの変更は行っていない。
+- 時刻は読みやすさのため分・秒表記とし、小数は表示上丸めている。
+
+### 対象英語cueの有無と件数の変化
+
+- 9分18.902秒〜9分21.843秒と重なるcueを、track.cues全体から検索した。activeCuesだけの検索ではない。
+- 初期の取得では、日本語の「それに 採取は」＋改行＋「お前の担当だろ？」は存在したが、同範囲の英語cueは空だった。
+- 対象区間を通常再生で通過した後も、9分23.495秒・9分28.412秒で停止して取得した結果では、対象英語cueは空だった。英語の読込み済みcue数は79件。
+- それ以前の取得では英語68cue、再生を進めた後は79cueだった。cue総数の増加だけでは、対象時刻のcueが存在するとは限らなかった。
+- ページ再読み込み後、9分24.967秒で停止して取得した結果では、英語66cueのうち対象範囲に3cueが存在した。
+- 後方seek後の9分27.185秒では英語75cue、前方seek後の11分48.759秒では英語188cueで、いずれも同じ対象3cueが存在した。
+- 3cueの本文と同一時刻範囲は前節の観測と同じ。本文順は `No. And besides,`、`I thought you were`、`on top of the DNA?`。cタグは本文に残っていた。
+
+### track追加時の観測
+
+- 再読み込み後のログでは、初期のtrack総数1件で両言語の候補はなしだった。
+- addtrackを契機とする再解決ログで、総数274件の時点では英語index 28のsubtitlesと日本語index 79が採用された。
+- 総数275件になると、再解決・bindログの英語はindex 274のcaptionsへ変わり、日本語はindex 79だった。
+- これは当該再生時の追加・採用ログであり、index 28と274のcue内容の同一性や、全作品共通の優先順位を示すものではない。
+
+### 再生画面を閉じた後と開き直した後のDOM
+
+- Apple TV+の再生画面を閉じ、同じ作品の再生画面を開き直す操作を行った。
+- 閉じた後の取得では、document内のvideoは0個。`dialog.playback-view` または `[data-testid="playback-view"]` で取得したDIALOGはopen:trueのまま存在したが、内部videoは0個だった。
+- 同じ取得時、`[data-atv-bilingual-debug="session"]` のDOM個数は0だった。
+- 開き直した後はDIALOG内部にvideoが1個あり、textTracksは275件。debug badgeのDOM個数は1だった。
+- 再接続後の12分00.060秒での取得では、英語hidden・66cue、日本語showing・372cueだった。
+- DIALOGが存在しopen:trueであることだけでは、videoが存在するとは限らないという観測として残す。
+
+### 観測の限界と参照先
+
+- 対象英語cueが空だった理由は未特定。未読込み、途中での削除、その他の要因を区別できていない。再読み込みだけを原因・解決策と断定しない。
+- 読込み済みcue数を作品全体の字幕件数とみなさない。
+- 終了前後のvideo node identityや、別作品・別エピソード切替は今回確認していない。
+- バッジ個数やDOM不在は、内部listener・timer・購読の全件解除成功を証明しない。
+- 全作品・全track・全再生条件に一般化しない。
+- track解決・sessionの採用判断は `docs/apple-tv-dom-structure.md`、同時刻正規化・truthの契約は `docs/minimal-panel-architecture.md` を参照する。実施結果・進捗・未完了作業はSerenaのwork-handoffで管理する。
