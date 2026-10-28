@@ -295,8 +295,10 @@ ON/OFF を明示的に保存する場合:
 ### 8.1 保存先
 
 言語設定の保存先は `chrome.storage.sync` を基本とする。
-ON/OFF の保存領域は `sync` / `local` の詳細判断を保留とする。
-全作品共通の永続化は確定事項だが、端末間共有の有無は未確定である。
+全作品共通の ON/OFF を表す `extensionEnabled` は、`chrome.storage.local` に保存する。
+ON/OFF は利用中の Chrome プロファイル内で全作品・全エピソードに共通とし、端末間では同期しない。
+ユーザーが ON/OFF を変更したときに保存し、作品変更、処理 session の停止・再初期化、panel の手動開閉では保存値を変更しない。
+未保存時の既定値・保存値の復元・panel 開閉の非保存は §11.3 に従う。
 
 Chrome Storage は Chrome 拡張機能が使う設定保存領域である。  
 ローカルファイルや `localStorage` を設定の正本として使わない。
@@ -776,7 +778,7 @@ export type SettingsLoadResult =
 - 学習言語必須、母国語任意、同一値禁止が明記されている
 - 候補言語一覧と track 解決の責務分離が明記されている
 - 保存対象として `primaryLang` / `secondaryLang` / `extensionEnabled` が定義されている
-- 言語設定の保存先と、ON/OFF の保存領域の確定・保留が区別されている
+- 言語設定は `chrome.storage.sync`、全作品共通の ON/OFF は端末間同期を行わない `chrome.storage.local` に保存することが明記されている
 - `secondaryLang` 未選択時のブラウザ言語 fallback が明記されている
 - 保存設定と runtime state の境界が明記されている
 - ON/OFF は全作品共通で保存し、panel open state は保存しないことが明記されている
