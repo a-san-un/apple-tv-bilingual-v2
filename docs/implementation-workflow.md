@@ -973,6 +973,9 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 - `src/panel/panel-host.ts`
 - `src/panel/panel-renderer.ts`
+- `src/content/panel-session.ts` と関連テスト
+- `src/content/session-lifecycle.ts` と関連テスト
+- `src/content/index.ts` と関連テスト
 - `src/subtitles/subtitle-history.ts`
 - `src/ui/ui-state.ts`
 - `src/shared/dom.ts`
@@ -993,6 +996,20 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - 初期版では DOM 差分最適化よりも責務明確化を優先する
 - 空状態や未取得状態の最小表示もここで扱う
 
+#### `src/content/panel-session.ts`
+
+- architecture の責務・API 境界に従い、host / renderer と字幕データ境界・既存 UI store を接続する
+- 単体で初回取得・更新購読・表示切替・再入・失敗時 cleanup を検証してから、lifecycle へ組み込む
+- snapshot・UI state を正本として複製保持せず、truth / history の再構築を重複実装しない
+
+#### 接続側: `session-lifecycle.ts` / `index.ts`
+
+- lifecycle が処理 session ごとに panel 接続を生成し、停止・再開始・最終 dispose 時に解放する
+- readiness retry ごとに panel 接続を生成せず、旧購読・旧 DOM を次 session へ持ち越さない
+- index は既存 UI store の受渡しなどの配線だけを行い、接続処理・cleanup 本体を持たない
+- 単体検証と再生経路への接続検証を分け、後者で待機から字幕表示への更新と停止時解放を確認する
+- mount 候補は DOM 正本文書と現在の実画面で確認し、selector の存在だけで採用確定としない
+
 ### 完了条件
 
 - panel host が mount / unmount できる
@@ -1004,6 +1021,8 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 - 実装直後に typecheck、lint
 - renderer の pure な整形部があれば unit test を追加
+- panel 接続の自動テストは testing-checklist の「panel 接続の自動テスト」に従う
+- lifecycle 組込み後は初回表示・更新・停止・再接続の接続テストと全体回帰検証を行う
 - Apple TV+ 実画面で panel が最小表示できることを確認する
 - この時点では 7:3 layout 未導入でもよい
 

@@ -291,6 +291,7 @@ listener 解除失敗時の確認は「cleanup、二重 listener、二重描画�
 - `src/subtitles/subtitle-block-candidates.ts`
 - `src/subtitles/subtitle-history.ts`
 - `src/panel/panel-renderer.ts`
+- `src/content/panel-session.ts` と関連テスト
 - 再生経路への接続を担当する呼び出し側
 
 仕様の参照先:
@@ -392,6 +393,28 @@ panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / 
 同じ要約は重複出力しない。全字幕配列は出さず、要約対象外の block のみの変化はログに現れない。
 有効中は更新ごとに snapshot のコピー取得が発生するが、フラグ無効時は購読も取得もしない。
 取得・出力処理の失敗は記録し、次の更新で再試行する。ログ確認は panel の描画・スクロール確認の代わりにはしない。
+
+### panel 接続の自動テスト
+
+責務・入力・解除順は architecture §6・§17 の panel-session を参照する。
+この節は接続 module 単体の観点であり、lifecycle 組込み・実画面の検証とは区別する。
+
+- 初回取得、字幕更新、UI 更新で、最新 history と表示状態を renderer へ渡すこと
+- null snapshot、空 history、current なしの future を扱い、入力を変更・補完しないこと
+- panel close で字幕接続や外部 UI store を破棄しないこと
+- renderer 生成、購読登録、初回取得・描画の失敗で、生成・登録済み資源の cleanup を試すこと
+- 初期化と cleanup が両方失敗した場合、両原因を保持すること
+- 更新通知中の取得・描画失敗を記録し、通知元へ例外を漏らさず、後続更新を処理できること
+- 購読解除・renderer 除去・host 除去の個別失敗後も残りを試し、失敗を報告すること
+- 解除順・回数と、実際の DOM 状態を別々に確認し、親ごとの除去を子自身の除去成功と混同しないこと
+- dispose 後の旧通知で取得・描画せず、反復 dispose で解除を再試行しないこと
+- 取得中の再入更新・dispose が、古い結果の描画を起こさないこと
+- 購読登録中の同期通知後も、初回取得が最新値を反映すること
+- cleanup 中の旧通知・反復 dispose が再取得・二重解除を起こさないこと
+- 旧 host 除去後の再入生成で、旧 cleanup が新接続を破棄しないこと。同一 ID の重複許可とは区別すること
+
+callback 内は観測にとどめ、正常終了・期待値・呼出回数は例外捕捉境界の外側で検証する。
+解除に失敗した資源を解除成功と扱わず、GC による回収や実機の全資源解除まで証明したとしない。
 
 ### panel 表示・自動追従の手動確認
 

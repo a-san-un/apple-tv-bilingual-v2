@@ -161,8 +161,10 @@ src/
 │  │  └─ 起動入口。settings 読込、target 解決要求、session 開始停止、module 配線だけを行う
 │  ├─ playback-root.ts
 │  │  └─ Apple TV+ 再生対象の discovery。root、video、panel mount target、layout target を解決する
-│  └─ session-lifecycle.ts
-│     └─ 処理 session の開始停止、controller の最終 dispose、readiness 待機・retry、target 再評価と restart 判断を所有する
+│  ├─ session-lifecycle.ts
+│  │  └─ 処理 session の開始停止、controller の最終 dispose、readiness 待機・retry、target 再評価と restart 判断を所有する
+│  └─ panel-session.ts
+│     └─ 字幕データ境界・UI store と panel を接続し、接続に属する購読と cleanup 合成を所有する
 │
 ├─ subtitles/
 │  ├─ subtitle-source.ts
@@ -287,6 +289,29 @@ readiness 待機中に video identity が変わった場合は、古い待機を
 
 検出元と readiness retry は共通の target 再評価経路へ接続する。
 stop / dispose の契約は §12、restart の判断と理由対応は §13 を正本とする。
+
+### `src/content/panel-session.ts`
+
+処理 session に属する panel 接続を組み立てる module とする。
+lifecycle が接続の生成・終了を所有し、この module が返す disposer を保持する。
+
+- 解決済み mount 要素を受け取り、host と renderer の生成・接続を委譲する
+- 字幕 snapshot の取得・更新購読境界と、既存 UI store の読取・購読を利用する
+- history を再導出せず、取得結果と UI state を renderer へ渡す
+- 字幕接続なしの null は表示用の空 history に対応させ、取得不能の原因を推測しない
+- panel close は表示だけに反映し、字幕接続・UI store・controller 自体を停止・破棄しない
+- 初期化失敗時は生成・登録済み資源の解除を試し、初期化と cleanup の両方が失敗した場合は両原因を保持する
+- 更新通知中の取得・描画失敗は記録し、通知元へ伝播させない。自動 retry は追加しない
+- 取得中の再入更新・停止後に、古い取得結果を描画しない
+
+購読解除は登録元であるこの module が所有する。接続を無効化して保持参照を切り離し、
+UI 購読、字幕購読、renderer、host の順で cleanup を試す。
+一部の失敗後も残りを試し、失敗は呼出元へ返す。反復 dispose で再試行しない。
+host の mount / unmount は panel-host、描画領域の操作は renderer が引き続き所有する。
+
+UI store の生成・意思の更新、target 探索、readiness、restart 判断、truth 構築、
+自動追従、layout は担当しない。字幕データ取得境界は関数として受け取り、
+source・TextTrack や lifecycle controller 本体に依存しない。
 
 ### `src/subtitles/subtitle-session.ts`
 
@@ -540,6 +565,7 @@ resource owner は必ず1つに限定する。
 - 個別 module は自分が生成・登録した resource の `dispose()` を返す
 - `playback-root.ts` は discovery module であり、session resource を所有しない
 - `subtitle-source.ts` は subtitle binding を所有するが、panel DOM は触らない
+- `panel-session.ts` は panel 接続の購読と host / renderer の cleanup 合成を所有し、lifecycle が接続の disposer を保持する
 - `panel-host.ts` は panel host の mount / unmount を所有する
 - `native-menu-sync.ts` は native menu listener の attach / detach を所有する
 - `player-layout.ts` は layout state、layout style、observer、layout timer の適用・解除を所有する
@@ -586,6 +612,7 @@ shared/*
 
 依存ルールは次の通りとする。
 
+- `session-lifecycle.ts` → `panel-session.ts` → host / renderer / shared を panel 接続の依存方向とする。panel-session は渡された取得・購読境界と UI store を使い、lifecycle 本体へ逆依存しない
 - `panel-renderer.ts` は `subtitle-source.ts` に依存しない
 - `subtitle-source.ts` は `panel-host.ts` や `panel-renderer.ts` に依存しない
 - `subtitle-block-builder.ts` は DOM を触らない
@@ -1606,6 +1633,21 @@ current 以外の block を、非選択という理由で取り除かない。
 | A:10秒、B:11秒、C:12秒 | 12秒以降 | C |
 | A:10秒、B:10秒、C:18秒 | 10秒以上18秒未満 | A。Bはfutureに残す |
 | A:10秒、B:10秒、C:18秒 | 18秒以降 | C。A・Bはpastに残す |
+
+### `panel-session.ts`
+
+`createPanelSession(options)` は次の入力を受け取り、`Disposable` を返す。
+
+- `mountEl`: 呼出元が解決した配置先
+- `uiState`: 既存 UI store の getState / subscribe だけの境界
+- `getSubtitleSnapshot`: 現在の字幕 snapshot または null を返す、this に依存しない関数
+- `subscribeSubtitle`: 更新 callback を登録し、接続側が実行する解除関数を返す関数
+
+購読登録の失敗時は、通知元が途中の登録を残さないことを入力側の契約とする。
+先に購読を登録してから最新値を取得し、初回描画を行う。
+公開操作は dispose だけとし、表示更新や restart の公開 API を重複して設けない。
+同一 host ID の有効な接続を重複作成しない。
+責務・エラー処理・解除順は §6 の panel-session を参照する。
 
 ### `panel-host.ts`
 
