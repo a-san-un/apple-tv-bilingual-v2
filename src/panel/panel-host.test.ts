@@ -1,15 +1,22 @@
 /* @vitest-environment jsdom */
-/** panel host の所有・重複防止・解放を確認する。実画面の可視性は対象外。 */
+/**
+ * panel-host.test.ts
+ *
+ * Vitest と jsdom で panel の表示契約・DOM 所有・反復 cleanup を検証する。
+ * mock は afterEach で復元し、document に追加したテスト DOM を除去する。
+ * ブラウザの可視性・実寸法・再生経路の購読解除は、このテストでは証明しない。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mountPanelHost } from './panel-host';
 
-afterEach(() => {
+afterEach(/** mock とテスト DOM を次のケースへ持ち越さない。 */ () => {
+  // 意図的に失敗させた DOM method も復元してから、テスト DOM を除去する。
   vi.restoreAllMocks();
   document.body.replaceChildren();
 });
 
-describe('panel-host', () => {
-  it('指定先に空の host を追加し、既存 DOM を保持する', () => {
+describe('panel-host', /** この module の契約を検証するケースを登録する。 */ () => {
+  it('指定先に空の host を追加し、既存 DOM を保持する', /** 指定先に空の host を追加し、既存 DOM を保持することを検証する。 */ () => {
     const mount = document.createElement('section');
     const existing = document.createElement('p');
     mount.append(existing);
@@ -25,13 +32,13 @@ describe('panel-host', () => {
     expect(mount.firstChild).toBe(existing);
   });
 
-  it('同じ document の別の mount 先でも重複を拒否する', () => {
+  it('同じ document の別の mount 先でも重複を拒否する', /** 同じ document の別の mount 先でも重複を拒否することを検証する。 */ () => {
     const firstMount = document.createElement('div');
     const secondMount = document.createElement('div');
     document.body.append(firstMount, secondMount);
     const first = mountPanelHost(firstMount);
     const element = first.element;
-    expect(() => mountPanelHost(secondMount)).toThrow('Panel host already exists');
+    expect(/** assertion 対象の呼出しを遅延する。@returns 呼出し結果。@throws 対象処理が投げた例外。 */ () => mountPanelHost(secondMount)).toThrow('Panel host already exists');
     expect(first.element).toBe(element);
     expect(element?.parentElement).toBe(firstMount);
     expect(secondMount.childNodes.length).toBe(0);
@@ -39,23 +46,23 @@ describe('panel-host', () => {
     first.dispose();
   });
 
-  it('未接続の mount 先でも配下の重複を拒否する', () => {
+  it('未接続の mount 先でも配下の重複を拒否する', /** 未接続の mount 先でも配下の重複を拒否することを検証する。 */ () => {
     const mount = document.createElement('div');
     const first = mountPanelHost(mount);
-    expect(() => mountPanelHost(mount)).toThrow('Panel host already exists');
+    expect(/** assertion 対象の呼出しを遅延する。@returns 呼出し結果。@throws 対象処理が投げた例外。 */ () => mountPanelHost(mount)).toThrow('Panel host already exists');
     expect(mount.querySelectorAll('#atv-panel-host')).toHaveLength(1);
     first.dispose();
   });
 
-  it('mount 先自体が host ID の場合も既存要素に触れない', () => {
+  it('mount 先自体が host ID の場合も既存要素に触れない', /** mount 先自体が host ID の場合も既存要素に触れないことを検証する。 */ () => {
     const mount = document.createElement('div');
     mount.id = 'atv-panel-host';
-    expect(() => mountPanelHost(mount)).toThrow('Panel host already exists');
+    expect(/** assertion 対象の呼出しを遅延する。@returns 呼出し結果。@throws 対象処理が投げた例外。 */ () => mountPanelHost(mount)).toThrow('Panel host already exists');
     expect(mount.childNodes.length).toBe(0);
     expect(mount.id).toBe('atv-panel-host');
   });
 
-  it('mount 先の ownerDocument で要素を生成する', () => {
+  it('mount 先の ownerDocument で要素を生成する', /** mount 先の ownerDocument で要素を生成することを検証する。 */ () => {
     const doc = document.implementation.createHTMLDocument();
     const host = mountPanelHost(doc.body);
     expect(host.element?.ownerDocument).toBe(doc);
@@ -64,7 +71,7 @@ describe('panel-host', () => {
     expect(doc.getElementById('atv-panel-host')).toBeNull();
   });
 
-  it('親から先に外されても一度だけ除去を試す', () => {
+  it('親から先に外されても一度だけ除去を試す', /** 親から先に外されても一度だけ除去を試すことを検証する。 */ () => {
     const mount = document.createElement('div');
     const host = mountPanelHost(mount);
     const element = host.element!;
@@ -77,7 +84,7 @@ describe('panel-host', () => {
     expect(element.parentNode).toBeNull();
   });
 
-  it('旧 host の再 dispose が新 host を除去しない', () => {
+  it('旧 host の再 dispose が新 host を除去しない', /** 旧 host の再 dispose が新 host を除去しないことを検証する。 */ () => {
     const mount = document.createElement('div');
     document.body.append(mount);
     const oldHost = mountPanelHost(mount);
@@ -92,30 +99,30 @@ describe('panel-host', () => {
     newHost.dispose();
   });
 
-  it('除去失敗でも内部参照を解放し、成功とは扱わず再試行しない', () => {
+  it('除去失敗でも内部参照を解放し、成功とは扱わず再試行しない', /** 除去失敗でも内部参照を解放し、成功とは扱わず再試行しないことを検証する。 */ () => {
     const mount = document.createElement('div');
     const host = mountPanelHost(mount);
     const element = host.element!;
     const error = new Error('remove failed');
-    const remove = vi.spyOn(element, 'remove').mockImplementation(() => {
+    const remove = vi.spyOn(element, 'remove').mockImplementation(/** DOM 操作の失敗を再現する。@throws テストで用意した例外。 */ () => {
       throw error;
     });
-    expect(() => host.dispose()).toThrow(error);
+    expect(/** assertion 対象の呼出しを遅延する。@returns 呼出し結果。@throws 対象処理が投げた例外。 */ () => host.dispose()).toThrow(error);
     expect(host.element).toBeNull();
     expect(element.parentElement).toBe(mount);
-    expect(() => host.dispose()).not.toThrow();
+    expect(/** assertion 対象の呼出しを遅延する。@returns 呼出し結果。@throws 対象処理が投げた例外。 */ () => host.dispose()).not.toThrow();
     expect(remove).toHaveBeenCalledTimes(1);
   });
 
-  it('mount 失敗を呼出元へ伝え、既存 DOM を保持する', () => {
+  it('mount 失敗を呼出元へ伝え、既存 DOM を保持する', /** mount 失敗を呼出元へ伝え、既存 DOM を保持することを検証する。 */ () => {
     const mount = document.createElement('div');
     const existing = document.createElement('p');
     mount.append(existing);
     const error = new Error('mount failed');
-    vi.spyOn(mount, 'appendChild').mockImplementation(() => {
+    vi.spyOn(mount, 'appendChild').mockImplementation(/** DOM 操作の失敗を再現する。@throws テストで用意した例外。 */ () => {
       throw error;
     });
-    expect(() => mountPanelHost(mount)).toThrow(error);
+    expect(/** assertion 対象の呼出しを遅延する。@returns 呼出し結果。@throws 対象処理が投げた例外。 */ () => mountPanelHost(mount)).toThrow(error);
     expect(mount.childNodes.length).toBe(1);
     expect(mount.firstChild).toBe(existing);
     expect(mount.querySelector('#atv-panel-host')).toBeNull();

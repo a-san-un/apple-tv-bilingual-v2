@@ -1,4 +1,6 @@
 /**
+ * panel-renderer.ts
+ *
  * 外部から渡された history と UI state を panel 内へ描画する。
  * 描画領域だけを所有し、host の mount / unmount は panel-host に任せる。
  * source・TextTrack・再生時刻の読取、購読、自動追従、layout は担当しない。
@@ -8,14 +10,19 @@ import type { SubtitleBlock, SubtitleHistoryView } from '../shared/types';
 
 /** 接続側が取得した表示データと現在の表示意思。renderer は保持しない。 */
 export type PanelRenderInput = {
+  /** 導出済みの表示順と current。renderer は再選択・並べ替えをしない。 */
   history: SubtitleHistoryView;
+  /** panel の表示意思。字幕処理 session の停止指示ではない。 */
   panelOpen: boolean;
+  /** 拡張の有効状態。false なら panelOpen にかかわらず非表示にする。 */
   extensionEnabled: boolean;
 };
 
 /** 描画領域を更新・破棄する API。host 自体の所有権は持たない。 */
 export type PanelRenderer = {
+  /** 入力を保持せず描画する。dispose 後は無効。DOM 更新の例外は呼出元へ伝える。 */
   render(input: PanelRenderInput): void;
+  /** 自身の描画領域だけを除去する。host の dispose より先に呼ぶ。失敗は呼出元へ伝える。 */
   dispose(): void;
 };
 
@@ -30,6 +37,7 @@ const createTextRegion = (doc: Document, text: string | null): HTMLElement => {
   const region = doc.createElement('div');
   region.style.whiteSpace = 'pre-wrap';
   region.style.minHeight = '1lh';
+  // 字幕本文を HTML として実行せず、block の文字列をそのまま表示する。
   region.textContent = text ?? '';
   return region;
 };
@@ -63,14 +71,17 @@ const createBlockRow = (
 /**
  * host に独立した描画領域を追加する。初回 render までは非表示にする。
  *
- * @param hostEl panel-host が所有する要素。renderer より長く生存させる。
+ * @param hostEl panel-host が所有する要素。renderer より長く生存させ、
+ *   同じ host に有効な renderer を重複作成しない。
  * @returns 接続側が保持・破棄する renderer。dispose 後の render は何もしない。
  * @throws DOM の生成・追加に失敗した場合、その例外。
  */
 export const createPanelRenderer = (hostEl: HTMLElement): PanelRenderer => {
   let root: HTMLElement | null = hostEl.ownerDocument.createElement('div');
   root.dataset.subtitlePanel = 'content';
+  // 初回入力を受け取る前に、空の領域が表示されるのを防ぐ。
   root.hidden = true;
+  // host の所有権は移さず、renderer が破棄する子領域だけを追加する。
   hostEl.append(root);
 
   return {
@@ -81,6 +92,7 @@ export const createPanelRenderer = (hostEl: HTMLElement): PanelRenderer => {
      * @throws DOM の生成・更新に失敗した場合、その例外。
      */
     render(input: PanelRenderInput): void {
+      // 破棄済みの renderer に遅れて入力が届いても、DOM を再生成しない。
       if (root === null) return;
       const doc = root.ownerDocument;
       const fragment = doc.createDocumentFragment();
@@ -93,6 +105,7 @@ export const createPanelRenderer = (hostEl: HTMLElement): PanelRenderer => {
       for (const block of input.history.future) {
         fragment.append(createBlockRow(doc, block, false));
       }
+      // 空 history だけでは未取得と track 不在を区別できないため、原因を断定しない。
       if (fragment.childNodes.length === 0) {
         const empty = doc.createElement('p');
         empty.textContent = '表示できる字幕はありません';
@@ -100,6 +113,7 @@ export const createPanelRenderer = (hostEl: HTMLElement): PanelRenderer => {
       }
       // host の他の子要素には触れず、所有する描画領域だけを置き換える。
       root.replaceChildren(fragment);
+      // 表示の切替だけを行い、UI store の意思や処理 session は変更しない。
       root.hidden = !input.extensionEnabled || !input.panelOpen;
     },
 

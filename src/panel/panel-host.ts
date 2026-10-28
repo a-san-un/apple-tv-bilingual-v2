@@ -1,4 +1,6 @@
 /**
+ * panel-host.ts
+ *
  * panel DOM の土台の生成・mount・unmount を所有する。
  * 汎用 DOM helper を使い、所有中の host 要素だけを保持する。
  * mount 先の解決、字幕描画、表示状態、layout は担当しない。
@@ -8,7 +10,9 @@ import { mountElement, removeElement } from '../shared/dom';
 
 /** panel DOM の参照と、その所有権を終了する API。 */
 export type PanelHost = {
+  /** 所有中の host。dispose 後は null。取得済みの外部参照は無効化できない。 */
   readonly element: HTMLElement | null;
+  /** host の除去を一度だけ試す。失敗は呼出元へ伝え、内部参照は解放する。 */
   dispose(): void;
 };
 
@@ -16,7 +20,8 @@ export type PanelHost = {
  * 指定先に字幕 panel の空の土台を作る。Apple TV+ 固有の探索は行わない。
  *
  * @param mountEl 呼出元が解決した mount 先。接続前の要素も受け付ける。
- * @returns 呼出元が保持・破棄する host。element は dispose 後に null になる。
+ * @returns 呼出元が保持し、renderer の破棄後に dispose する host。
+ *   element は dispose 後に null になる。
  * @throws 同じ document または mount 先の配下に host ID が存在する場合、
  *   既存 DOM を変更せず Error。DOM の生成・mount に失敗した場合はその例外。
  */
@@ -33,6 +38,7 @@ export const mountPanelHost = (mountEl: HTMLElement): PanelHost => {
 
   let element: HTMLElement | null = doc.createElement('div');
   element.id = 'atv-panel-host';
+  // 呼出元が選んだ親の既存 DOM を保持し、自身の host だけを追加する。
   mountElement(mountEl, element);
 
   return {
