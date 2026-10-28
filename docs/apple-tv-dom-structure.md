@@ -2,7 +2,7 @@
 
 この文書は、Apple TV+ 固有実装の判断資料である。
 
-詳細な実機観測値、selector の網羅表、既存コード調査ログ、track index、時系列ログは
+ブラウザで得た詳細な観測値、selector の網羅表、既存コード調査ログ、track index、時系列ログは
 `docs/apple-tv-dom-observations.md` を参照する。
 
 全体の module 構成、責務境界、session の原則は
@@ -82,7 +82,7 @@
 - `src/controls/on-off-toggle.ts` は ON/OFF toggle の描画と操作だけを扱う
 - ON/OFF toggle は拡張全体の enabled state だけを扱う
 - 注入先は controls 近傍、footer 近傍、playback root 直下の独自 host を候補とする
-- 注入先は controls の mount / unmount、z-index、pointer event、fullscreen を実機確認してから確定する
+- 注入先は controls の mount / unmount、z-index、pointer event、fullscreen をブラウザで確認してから確定する
 - panel open state は扱わない
 
 ### panel 開閉ボタン
@@ -91,7 +91,7 @@
 - panel 開閉ボタンは `src/ui/ui-state.ts` の panel open state だけを扱う
 - ON/OFF toggle とは別責務とする
 - 注入先は panel host 配下、controls 近傍、playback root 直下の独自 host を候補とする
-- 注入先は実機確認後に確定する
+- 注入先はブラウザ確認後に確定する
 
 ### 7:3 layout
 

@@ -134,7 +134,7 @@ npm run test
 - panel 開閉ボタンの見た目
 - SPA 遷移
 - video 差し替え
-- 実 cleanup
+- ブラウザ上での解放確認
 
 実施タイミング:
 - typecheck、lint、test が通った後
@@ -145,7 +145,7 @@ npm run test
 ## 実行前提
 
 - 確認する機能と接続範囲を明確にする。字幕取得だけの確認に panel の表示結果を合否条件として加えない。
-- 自動テスト、実機確認、未観測、対象外を区別する。自動テストの成功だけで実機確認済みとは扱わない。
+- 自動テスト、ブラウザ確認、未観測、対象外を区別する。自動テストの成功だけでブラウザ確認済みとは扱わない。
 - 必要な条件を再現できなかった項目は、成功ではなく未観測として扱う。
 - `primaryLang` と `secondaryLang` の候補値を明確にしてから実施する。
 - Apple TV+ の再生ページで video が再生可能な状態にしておく。
@@ -339,7 +339,7 @@ listener 解除失敗時の確認は「cleanup、二重 listener、二重描画�
 | 出力順 | primary の入力順を軸に secondary のみを開始時刻で挿入し、同時刻では primary を含む block を先にする |
 | 片言語・空入力 | primary のみ複数、secondary のみ複数、両言語空を確認する |
 
-builderとhistoryの接続では、実機で観測した同一開始・終了の英語3断片と
+builderとhistoryの接続では、ブラウザで観測した同一開始・終了の英語3断片と
 日本語1cueを回帰入力とし、英語全文と日本語が1blockになり、
 currentから末尾の英語断片が分離しないことを確認する。
 
@@ -373,7 +373,7 @@ currentから末尾の英語断片が分離しないことを確認する。
 
 builder の基本ケースだけでなく、対応づけ・欠損・出力順・入力条件違反をそれぞれ確認する。
 builder、history、再生経路への接続、panel の確認結果は区別して記録する。
-panel 実装前の実機確認は、workflow Phase 5 に従って block / history をログで観測し、
+panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / history をログで観測し、
 以下の panel 表示の手動確認とは分けて記録する。
 
 #### panel 実装前のログ観測手順
@@ -422,7 +422,7 @@ panel 実装前の実機確認は、workflow Phase 5 に従って block / histor
 
 実施タイミング:
 - builder / history の各実装単位の直後に対象の自動テストを追加・実行する。
-- 再生経路への接続後、panel 実装前に block / history を実機ログで確認する。
+- 再生経路への接続後、panel 実装前に block / history をブラウザのログで確認する。
 - panel renderer・自動追従の実装後に、手動確認を行う。
 - cue 対応づけ・history・追従ロジック変更時に、関係する回帰確認を行う。
 
@@ -728,7 +728,7 @@ small integration test で確認する項目:
 - cleanup が途中で失敗しても残りを試し、全件の試行後に AggregateError で失敗を報告すること。
 - 失敗後に bag.dispose を再度呼んでも、同じ cleanup を再実行しないこと。
 - 個別 disposer の直接実行で失敗した場合も、bag 側では二重実行せず残りを処理すること。
-- composeDisposers も逆順実行・一度化・失敗報告の契約を満たすこと。
+- composeDisposers も登録の逆順に一度だけ実行し、失敗を報告する仕様を満たすこと。
 - source が同じ pair に二重 bind せず、再 bind 時に旧 listener の解除を先に試すこと。
 - source の一方の listener 解除が失敗しても、他方の解除を試し、失敗をログに残すこと。
 - listener 登録失敗後の cleanup も失敗した場合、source の bind から例外を漏らさないこと。
@@ -873,13 +873,13 @@ DOM 残留がある場合は、Elements の状態も残す。
 - Apple TV+ 実 DOM の selector 妥当性
 - 実 `video.textTracks` の取得タイミング
 - native subtitle UI との関係
-- panel host の実注入位置
-- ON/OFF toggle の実注入位置
-- panel 開閉ボタンの実注入位置
-- controls の表示・非表示変化を含む実 DOM 計測と、7:3 layout の実見た目
+- panel host の配置位置
+- ON/OFF toggle の配置位置
+- panel 開閉ボタンの配置位置
+- controls の表示・非表示変化を含むブラウザ上の DOM 計測と、7:3 layout の表示
 - SPA 遷移
 - video 差し替え
-- 実 cleanup の成否
+- ブラウザ上で解放処理が成功したか
 
 判断基準:
 - Apple TV+ 実画面がなくても再現できるものは、まず自動テストに寄せる。

@@ -126,7 +126,7 @@ TypeScript に不慣れでも、各 module の役割、依存、session と clea
 対象は、module 内部だけで使う関数、class の method、callback として渡す名前付き関数を含む。
 export する型とクラスにも JSDoc を付ける。内部の型は、意味が名前から自明でない場合に付ける。
 
-JSDoc は、読み手が本体を読まずに呼び方と結果を理解するための契約を示す。
+JSDoc は、読み手が本体を読まずに呼び方と結果を理解できるよう、関数の仕様を示す。
 行コメントは実装上の「なぜ」を補い、JSDoc は関数の役割・入力・出力・失敗条件を説明する。
 
 #### 関数の JSDoc に書くこと
@@ -847,7 +847,7 @@ readiness 待機と retry の実装を index へ移さない。
 - lifecycle が字幕接続の寿命を管理し、source が cue listener を管理する
 - renderer なしで採用結果と cue 取得を確認できる
 - 停止・再開始・破棄時に旧字幕接続の cleanup を試す
-- 自動テスト成功、コード上の確認、実機確認を区別して記録する
+- 自動テスト成功、コード上の確認、ブラウザ確認を区別して記録する
 - 未観測・未対応・失敗を残したまま、Phase 全体の完了を断定しない
 
 ### 検証タイミング
@@ -909,7 +909,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 - 字幕接続のデータ取得と更新通知を、状態購読・診断観測と分離して中継する
 - 初回接続・更新・旧接続のクリア、旧 callback の無効化、通知中の停止・再開始を同テストで確認する
-- snapshot の取得境界と cleanup 契約は architecture の lifecycle API を参照する
+- snapshot の取得範囲と解放時の動作は architecture の lifecycle API を参照する
 
 #### `src/subtitles/subtitle-block-builder.ts`
 
@@ -919,7 +919,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - UI 向けの見た目都合ではなく、truth を返すことに集中する
 - block の時刻範囲と本文の欠損時ルールを整理する
 - 現行の `SubtitleBlock` に id / key は追加しない
-- 入力境界と対応づけの契約は、minimal-panel-architecture の builder API 境界を正本とする
+- 入力条件と対応づけの仕様は、minimal-panel-architecture の builder API 境界を正本とする
 
 #### `src/subtitles/subtitle-block-candidates.ts`
 
@@ -948,10 +948,10 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - `subtitle-block-builder.ts` と `subtitle-history.ts` の unit test を追加
 - 同時刻正規化の境界・多数件・片言語・重複・順序・本文保持を同テストで確認する
 - 単位ベースの候補点数・同点比較・消費を確認する
-- 実機の英語3断片を固定した回帰入力で、英語全文が同時刻の別blockへ分離せずcurrentへ渡ることを確認する
+- ブラウザで観測した英語3断片を固定した回帰入力で、英語全文が同時刻の別blockへ分離せずcurrentへ渡ることを確認する
 - 正規化条件外の同時刻blockと、時刻の異なる3単位以上の扱いは既存規則を維持する
 - 時刻ずれ、secondary 欠損、track 切替前後の最低限ケースを test する
-- panel 実装へ入る前に、実機で block が組めているかをログで確認する
+- panel 実装へ入る前に、ブラウザのログで block が組めているかを確認する
 
 ## Phase 6: panel host と panel renderer
 
@@ -1182,7 +1182,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 ### 目的
 
 - MVP として必要な品質ラインを満たす
-- 実機依存部分を最小の固定手順で回せるようにする
+- ブラウザでしか確認できない部分を、少数の固定手順で確認できるようにする
 
 ### 触るファイル
 
@@ -1263,7 +1263,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 運用上の目安:
 
 - Phase 0〜5 は自動テスト比重を高くする
-- Phase 6〜9 は手動確認が増えるが、先に自動テストを通してから実機確認へ進む
+- Phase 6〜9 は手動確認が増えるが、先に自動テストを通してからブラウザ確認へ進む
 - 手動確認でしか見えない Apple TV+ 依存挙動は、ログまたは health snapshot で状態確認しやすくする
 
 ## 作業時の注意

@@ -9,11 +9,11 @@
 
 ## 1. 観測ルール
 
-- 推測ではなく、既存コードまたは実機観測で確認できた事実だけを書く
-- 既存コードの調査結果と実機観測結果を分けて書く
+- 推測ではなく、既存コードまたはブラウザでの観測で確認できた事実だけを書く
+- 既存コードの調査結果とブラウザでの観測結果を分けて書く
 - selector を書く場合は、確認条件と安定性を併記する
 - root、video、`textTracks`、controls、panel host candidate、観測時の問題を記録する
-- 実機で未確認の項目は「未確認」と明記する
+- ブラウザで未確認の項目は「未確認」と明記する
 - selector を Apple TV+ の安定仕様として断定しない
 - 実装判断は `docs/apple-tv-dom-structure.md` に集約し、この文書には詳細な観測事実を置く
 - panel 候補や selector 候補については、採用判断ではなく観測上の利点・懸念・確認結果だけを書く
@@ -122,10 +122,10 @@
 
 | 候補 | 確認条件 | 結果 | 安定性 | 備考 |
 | --- | --- | --- | --- | --- |
-| `dialog.playback-view` | 実機再生画面、2026-10-19 / 2026-10-20 | 検出 | 中 | 2026-10-20 probe 中は継続して同一 root が検出された |
+| `dialog.playback-view` | ブラウザの再生画面、2026-10-19 / 2026-10-20 | 検出 | 中 | 2026-10-20 probe 中は継続して同一 root が検出された |
 | `[data-testid="playback-view"]` | 既存コード | 使用実績あり | 中 | 2026-10-20 は第一候補が取得できたため fallback は未使用 |
-| `dialog.playback-view video` | 実機再生画面、2026-10-20 | 検出 | 中 | root 配下の video を解決できた |
-| `document.querySelector("video")` | 実機再生画面、2026-10-20 | 検出 | 中 | root 内探索に失敗した場合の fallback 候補 |
+| `dialog.playback-view video` | ブラウザの再生画面、2026-10-20 | 検出 | 中 | root 配下の video を解決できた |
+| `document.querySelector("video")` | ブラウザの再生画面、2026-10-20 | 検出 | 中 | root 内探索に失敗した場合の fallback 候補 |
 
 - 2026-10-20 の probe 開始時、root は `dialog.playback-view` として検出された。
 - root path は `html > body > div.body-container > div.main-playback-view > dialog.playback-view.svelte-6e68jn.is-full-viewport` だった。
@@ -292,7 +292,7 @@
 - `.video-player__video-container`
 - `#atv-panel-host`
 
-実機で、controls 表示・非表示による mount / unmount、resize、class 変化は未確認である。
+ブラウザで、controls 表示・非表示による mount / unmount、resize、class 変化は未確認である。
 
 ### 7.2 7:3 layout 基準候補
 
@@ -300,8 +300,8 @@
 | --- | --- | --- | --- |
 | `.video-player__video-container` | 既存版の video container selector、2026-10-20 の video 親要素 | 中 | class 名依存 |
 | `.video-player__content` | video の親要素として検出 | 低 | layout 境界として未検証 |
-| `dialog.playback-view` | playback root として実機検出 | 中 | panel を含む全体領域になる可能性 |
-| `video` | 実機検出 | 中 | controls を含まない |
+| `dialog.playback-view` | playback root としてブラウザで検出 | 中 | panel を含む全体領域になる可能性 |
+| `video` | ブラウザで検出 | 中 | controls を含まない |
 
 - `.video-player__video-container` は最初の layout 基準候補である。
 - layout の正確な基準と controls 補正値は、panel 実装後に resize / fullscreen / controls visible 状態を含めて測定する必要がある。
@@ -374,13 +374,13 @@
 | SPA target change の存在 | 既存コード | あり | coordinator が rebuild request に収束 |
 | delayed retry の存在 | 既存コード | あり | readiness 待機と連動 |
 | target change 時の旧 session cleanup | 既存コード | 必要 | 一度化が必要 |
-| seek 後の track state | 実機、2026-10-20 | 不変 | 284 tracks、showing 日本語を維持 |
-| seek 後の cuechange | 実機、2026-10-20 | 継続 | 同一 session で更新継続 |
-| 再生コンテンツ切替時の video replacement | 実機、2026-10-20 | あり | root は維持、video は消失後に新 node を検出 |
-| 新 video 直後の `textTracks` | 実機、2026-10-20 | 未準備 | 0件 → 1件 → 284件 |
-| 再描画時の root / controls 差し替え | 実機 | 未確認 | controls は未観測 |
-| 明示的な別エピソード移動時の root / video 差し替え | 実機 | 未確認 | 次回確認 |
-| 次話自動再生時の root / video 差し替え | 実機 | 未確認 | 次回確認 |
+| seek 後の track state | ブラウザ、2026-10-20 | 不変 | 284 tracks、showing 日本語を維持 |
+| seek 後の cuechange | ブラウザ、2026-10-20 | 継続 | 同一 session で更新継続 |
+| 再生コンテンツ切替時の video replacement | ブラウザ、2026-10-20 | あり | root は維持、video は消失後に新 node を検出 |
+| 新 video 直後の `textTracks` | ブラウザ、2026-10-20 | 未準備 | 0件 → 1件 → 284件 |
+| 再描画時の root / controls 差し替え | ブラウザ | 未確認 | controls は未観測 |
+| 明示的な別エピソード移動時の root / video 差し替え | ブラウザ | 未確認 | 次回確認 |
+| 次話自動再生時の root / video 差し替え | ブラウザ | 未確認 | 次回確認 |
 
 - 今回確認したのは、SPA 内で連続再生コンテンツが切り替わる際の video replacement である。
 - PSA、別作品の宣伝、本編前あらすじのどの境界で video replacement が起きたかは、今回のログだけでは特定できない。
@@ -391,23 +391,23 @@
 
 | selector / 探索方法 | 対象 | 確認条件 | 安定性 | 理由 |
 | --- | --- | --- | --- | --- |
-| `dialog.playback-view` | playback root | 実機と既存コード | 中 | class 名依存だが `dialog` と組み合わせ可能 |
+| `dialog.playback-view` | playback root | ブラウザと既存コード | 中 | class 名依存だが `dialog` と組み合わせ可能 |
 | `[data-testid="playback-view"]` | playback root | 既存コード | 中 | テスト用属性のため変更可能性あり |
-| `dialog.playback-view video` | video | 実機 | 中 | root 配下での探索 |
-| `document.querySelector("video")` | video | 実機 | 中 | 現在は一意だが複数 video の可能性を否定できない |
-| `#apple-music-video-player` | video | 実機 | 低 | 内部 ID の可能性。同じ ID の別 node が出現した |
-| `.video-player__video-container` | video container | 実機と既存コード | 中 | layout 用 class だが複数箇所で利用の可能性 |
-| `ul.contextual-menu__list[role="menu"]` | native subtitle menu root | 実機、字幕 menu open 中 | 中 | menu open 中のみ確認 |
-| `div.contextual-menu__group` | native menu group | 実機、字幕 menu open 中 | 中 | group class 依存 |
-| `li.contextual-menu-item` | menu item | 実機、字幕 menu open 中 | 中 | menu item class 依存 |
-| `select.contextual-menu-item__select` | native subtitle language select | 実機、字幕 menu open 中 | 中 | native `<select>` だが menu open 中のみ確認 |
-| `.contextual-menu-item__subtext` | selected language display | 実機、字幕 menu open 中 | 低 | 表示用要素であり正本ではない |
+| `dialog.playback-view video` | video | ブラウザ | 中 | root 配下での探索 |
+| `document.querySelector("video")` | video | ブラウザ | 中 | 現在は一意だが複数 video の可能性を否定できない |
+| `#apple-music-video-player` | video | ブラウザ | 低 | 内部 ID の可能性。同じ ID の別 node が出現した |
+| `.video-player__video-container` | video container | ブラウザと既存コード | 中 | layout 用 class だが複数箇所で利用の可能性 |
+| `ul.contextual-menu__list[role="menu"]` | native subtitle menu root | ブラウザ、字幕 menu open 中 | 中 | menu open 中のみ確認 |
+| `div.contextual-menu__group` | native menu group | ブラウザ、字幕 menu open 中 | 中 | group class 依存 |
+| `li.contextual-menu-item` | menu item | ブラウザ、字幕 menu open 中 | 中 | menu item class 依存 |
+| `select.contextual-menu-item__select` | native subtitle language select | ブラウザ、字幕 menu open 中 | 中 | native `<select>` だが menu open 中のみ確認 |
+| `.contextual-menu-item__subtext` | selected language display | ブラウザ、字幕 menu open 中 | 低 | 表示用要素であり正本ではない |
 | `#atv-panel-host` | extension panel host | extension 側が所有 | 高 | extension が生成・削除を管理する |
 | `[data-secondary-subtitle]` | extension secondary subtitle | extension 側が所有 | 高 | extension が生成・削除を管理する |
 | `[data-dual-subtitles-panel]` | extension panel shell | extension 側が所有 | 高 | extension が生成・削除を管理する |
 | `.video-container.svelte-1psbnd5.is-opaque` | opaque video container | 既存コード | 低 | framework hash を含む |
 | `.video-container.is-opaque` | opaque video container | 既存コード | 低 | Apple TV+ の実装 class に依存 |
-| `.background-video` | background video | 既存コード | 低 | 実機で未確認 |
+| `.background-video` | background video | 既存コード | 低 | ブラウザで未確認 |
 
 ## 11. 未確認事項と次回観測手順
 
@@ -521,7 +521,7 @@ dialog.playback-view
 - この比較ログは全cue配列を保存していないため、builder入力全体での連続位置はこの記録だけでは確定しない。
 - 同時刻の分割がすべての作品・trackで発生するとは断定しない。
 - 同時刻正規化と後続評価の仕様は、minimal-panel-architectureのbuilder APIを正本とする。
-- 本記録は変更前の実機観測であり、正規化の実装・テスト・変更後の実機確認が完了したことを示さない。
+- 本記録は変更前のブラウザでの観測であり、正規化の実装・テスト・変更後のブラウザ確認が完了したことを示さない。
 
 ## 2026-10-27〜28: 英語cue一覧の変化と再生画面の終了・再接続
 

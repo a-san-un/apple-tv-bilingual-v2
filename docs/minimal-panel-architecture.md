@@ -116,7 +116,7 @@ architecture は、責務境界、依存方向、データフロー、playback s
 | 保存設定、popup、候補言語、fallback、validation | `docs/settings-spec.md` |
 | 実装順、ファイル単位の作業手順、検証タイミング | `docs/implementation-workflow.md` |
 | Apple TV+ 固有の DOM、selector、video / `textTracks` の観測、native menu の実装判断 | `docs/apple-tv-dom-structure.md` |
-| 実機で得た DOM 詳細ログ、時系列、未確認事項 | `docs/apple-tv-dom-observations.md` |
+| ブラウザで得た DOM 詳細ログ、時系列、未確認事項 | `docs/apple-tv-dom-observations.md` |
 | テスト観点、自動テスト、手動確認、回帰確認 | `docs/testing-checklist.md` |
 | プロダクト要件、対象ユーザー、機能範囲、MVP 完了条件 | `docs/product-requirements.md` |
 
@@ -1025,7 +1025,7 @@ function summarizeTrack(
 ### `subtitle-source.ts`
 
 readiness 通過後の current video に対して、採用済み track を bind する。
-共通型は §18、cleanup の失敗契約は §19 を参照する。
+共通型は §18、解放処理に失敗した場合の動作は §19 を参照する。
 
 ```ts
 type SubtitleSourceVideo = {
@@ -1087,7 +1087,7 @@ function createSubtitleSource(
 - 取得のたびに現在値を読み、要約・cue 本文・過去の取得結果を source 内へキャッシュしない。
 - listener、timer、observer は追加せず、既存の binding / cleanup の寿命を変えない。
 - unbind / dispose 後は pair を両方 null、cue 件数を両方0で返す。
-- 接続状態の確認と診断には要約取得を使い、既存の `getSnapshot()` の本文取得・コピー保護の契約は変更しない。
+- 接続状態の確認と診断には要約取得を使い、既存の `getSnapshot()` の本文取得と、取得結果の変更を内部状態へ伝えない仕様は変更しない。
 
 #### 失敗と破棄
 
@@ -1814,7 +1814,7 @@ export type UiStateStore = {
 - add が返す個別 disposer も、成功・失敗にかかわらず一度だけ試す。
 - 個別 disposer の直接実行時は、その cleanup の例外をそのまま呼び出し元へ返す。
 - dispose 済み bag への add は、その場で cleanup を実行する。失敗時は例外をそのまま返す。
-- composeDisposers が返す disposer も、bag と同じ逆順実行・一度化・失敗集約の契約を持つ。
+- composeDisposers が返す disposer も、bag と同じく登録の逆順で一度だけ実行し、失敗をまとめて報告する。
 
 #### owner 側の処理
 
