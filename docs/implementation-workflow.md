@@ -1056,6 +1056,26 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - store の責務を超えて DOM を持たない
 - 全作品共通の ON/OFF の復元と、保存しない panel 開閉を区別する
 
+#### `src/settings/settings-store.ts`
+
+- ON/OFF の保存領域・読込失敗・型不正・保存失敗時の扱いを、settings-spec で確定してから実装する
+- 全作品共通の ON/OFF の読込・保存を実装する
+- 言語保存と ON/OFF 保存で、互いの保存値を上書きしない境界を保つ
+- panel 開閉状態や UI state 全体の snapshot は保存しない
+
+#### `src/settings/settings-store.test.ts`
+
+- ON/OFF の未保存と保存済み false を区別し、既定値と保存値の扱いを確認する
+- 言語保存と ON/OFF 保存で、互いの保存値を変更しないことを確認する
+- 読込失敗・型不正・保存失敗は、確定した settings-spec の期待値に従って確認する
+
+#### `src/content/index.ts`
+
+- settings-store による ON/OFF の読込結果を、操作側 runtime の UI store へ適用する配線を行う
+- 操作側の変更要求を、保存要求と lifecycle による開始停止へ接続する
+- 保存・復元の詳細や開始停止の判断本体は、それぞれの担当 module へ委譲する
+- 暫定の自動 ON から正式な復元経路へ移行し、保存済み OFF を開発用フラグで上書きしない
+
 #### `src/content/session-lifecycle.ts`
 
 - `extensionEnabled = false` のときに字幕処理・panel 表示・layout 適用と、それらに必要な監視を止める
@@ -1079,13 +1099,17 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 ### 検証タイミング
 
 - 実装直後に typecheck、lint
-- `ui-state.ts` と `player-layout.ts` の test を追加または更新
-- Apple TV+ 実画面で次だけ手動確認する
+- `settings-store.ts`、`ui-state.ts`、`player-layout.ts` の test を追加または更新する
+- 保存値の復元と操作からの保存・開始停止について、接続テストを追加または更新する
+- 関連する自動テストの成功後、Apple TV+ 実画面で次を手動確認する
   - ON/OFF toggle の有効 / 無効
   - panel 開閉
   - 7:3 layout
   - 横幅変化時の再計算
   - controls 表示時の崩れ有無
+- ON/OFF の未保存時・保存済み値の復元、作品変更・ページ再読み込み・ブラウザ再起動後の維持は、`docs/testing-checklist.md` の「ON/OFF toggle の確認項目」に従って確認する
+- panel 非表示中の操作経路と、技術的再接続時の開閉状態の維持は、同文書の「panel 開閉ボタンの確認項目」と「`ui-state.ts` small store の確認項目」に従って確認する
+- 新しい視聴の識別条件が未確定の場合、その経路を確認完了として扱わない
 
 ## Phase 8: restart / cleanup / SPA 遷移対応
 

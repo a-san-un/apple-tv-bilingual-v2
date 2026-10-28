@@ -60,7 +60,7 @@ architecture は、責務境界、依存方向、データフロー、playback s
 | layout state | panel 表示に必要な幅、適用済み style、layout observer / timer を管理する runtime 上の幾何状態 |
 | 7:3 layout | panel を開いたときに、既存 UI を含む再生画面領域 70%、panel 30% に分ける方針 |
 | playback session | 現在の Apple TV+ 再生対象に対して拡張機能が動く1回分の実行単位 |
-| runtime state | 現在の再生中だけメモリ上に持つ一時状態 |
+| runtime state | 現在の処理・表示・操作に必要な状態をメモリ上に持つ一時状態 |
 | 保存設定 | 再起動後も利用する設定値 |
 | owner | resource を生成、登録、解放する責任を唯一持つ module |
 | cleanup | listener、timer、observer、binding、DOM、state、参照を解放する処理 |
