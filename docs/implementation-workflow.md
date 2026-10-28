@@ -1092,15 +1092,8 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 #### `src/content/session-lifecycle.ts`
 
 - restart request をここに集約する
-- 次の `RestartReason` を扱う
-
-```ts
-export type RestartReason =
-  | 'video-disconnected'
-  | 'video-replaced'
-  | 'playback-root-disconnected'
-  | 'spa-target-changed';
-```
+- 開始・再初期化理由は `docs/minimal-panel-architecture.md` §18 の `RestartReason` に従う
+- video の disconnect・replacement、playback root の disconnect、SPA target change という契機と、理由コードの値を区別する
 
 - restart 手順を固定する
 

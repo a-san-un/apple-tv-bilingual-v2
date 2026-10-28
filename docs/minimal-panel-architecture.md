@@ -1460,6 +1460,9 @@ current 以外の block を、非選択という理由で取り除かない。
 
 ### `panel-host.ts`
 
+以下は API の設計例であり、関数名・引数・戻り値の詳細を確定するものではない。
+実装時は、本書で定義した責務・表示仕様・解放方針と照合して具体化する。
+
 ```ts
 type PanelHost = {
   element: HTMLElement;
@@ -1470,6 +1473,9 @@ function mountPanelHost(mountEl: HTMLElement): PanelHost;
 ```
 
 ### `panel-renderer.ts`
+
+以下は API の設計例であり、関数名・引数・戻り値の詳細を確定するものではない。
+実装時は、本書で定義した責務・表示仕様・解放方針と照合して具体化する。
 
 ```ts
 type PanelRenderer = {
@@ -1486,6 +1492,9 @@ function createPanelRenderer(hostEl: HTMLElement): PanelRenderer;
 
 ### `on-off-toggle.ts`
 
+以下は API の設計例であり、関数名・引数・戻り値の詳細を確定するものではない。
+実装時は、本書で定義した責務・表示仕様・解放方針と照合して具体化する。
+
 ```ts
 type OnOffToggleBinding = {
   dispose(): void;
@@ -1499,6 +1508,9 @@ function mountOnOffToggle(args: {
 ```
 
 ### `panel-open-close-button.ts`
+
+以下は API の設計例であり、関数名・引数・戻り値の詳細を確定するものではない。
+実装時は、本書で定義した責務・表示仕様・解放方針と照合して具体化する。
 
 ```ts
 type PanelOpenCloseButtonBinding = {
@@ -1531,11 +1543,20 @@ function createPlayerLayout(args: {
 
 ### `session-lifecycle.ts`
 
-controller は readiness 待機・開始停止・状態購読を提供する。
-共通型は §18、cleanup の失敗契約は §19 を参照する。
+controller は readiness 待機・開始停止・状態購読・字幕データの取得と更新通知を提供する。
+共通型は §18、解放処理に失敗した場合の動作は §19 を参照する。
+
+`subtitle` は字幕接続に使う設定入力であり、省略時は字幕接続を生成せず readiness の状態管理だけを行う。
+`onSubtitleObservation` は任意の診断用 callback であり、字幕データの取得・更新通知とは分けて扱う。
+`ReadySettings` は `docs/settings-spec.md`、`SubtitleSessionObservation` は `src/subtitles/subtitle-session.ts` を参照する。
 
 ```ts
 type SessionStateListener = (state: SessionState) => void;
+
+type SessionSubtitleInput = {
+  settings: ReadySettings;
+  fallbackSecondaryLang?: LanguageCode | null;
+};
 
 type SessionLifecycleOptions = {
   doc?: Document;
@@ -1545,6 +1566,10 @@ type SessionLifecycleOptions = {
     callback: () => void,
     delayMs: number,
   ) => DisposeFn;
+  subtitle?: SessionSubtitleInput;
+  onSubtitleObservation?: (
+    observation: SubtitleSessionObservation | null,
+  ) => void;
 };
 
 type SessionLifecycleController = {

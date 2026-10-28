@@ -125,7 +125,7 @@
 - `src/content/session-lifecycle.ts` は playback session の開始・停止・dispose を一元管理する
 - `src/content/session-lifecycle.ts` は readiness 待機、retry、restart request の収束を所有する
 - 再初期化候補は SPA target change、playback root disconnect、video disconnect、video replacement とする
-- 再起動理由は `video-disconnected`、`video-replaced`、`playback-root-disconnected`、`spa-target-changed` を基本候補とする
+- 開始・再初期化理由は `docs/minimal-panel-architecture.md` §18 の `RestartReason` に従い、DOM 上の契機と理由コードの値を区別する
 - video disconnect または video replacement を検出したら、旧 session を停止し、新 video の readiness を待って session を開始する
 - seek は session 再生成の契機にしない
 - seek 自体を理由に既存 track binding を作り直さない。history の時刻更新と source 更新による truth 再構築の区別は、`docs/minimal-panel-architecture.md` §13 を参照する
@@ -133,16 +133,19 @@
 - session の停止時は、track binding、cue listener、native menu binding、layout observer、panel host、controls をそれぞれの owner から確実に dispose する
 - SPA 遷移、再描画、seek の詳細観測は `docs/apple-tv-dom-observations.md` を参照する
 
-### DOM 契機と restart reason
+### DOM 契機と再初期化の扱い
 
-| DOM 契機 | restart reason | owner | 補足 |
-| --- | --- | --- | --- |
-| 監視中の video が DOM から外れた | `video-disconnected` | `src/content/session-lifecycle.ts` | 同一 root 内の差し替え候補として扱う |
-| 旧 video とは別 identity の新 video を検出した | `video-replaced` | `src/content/session-lifecycle.ts` | ID 文字列ではなく DOM node identity で判定する |
-| playback root が DOM から外れた | `playback-root-disconnected` | `src/content/session-lifecycle.ts` | root 再探索を伴う |
-| SPA target change を検出した | `spa-target-changed` | `src/content/session-lifecycle.ts` | URL ではなく target 観測を優先する |
-| seek が発生した | なし | - | restart reason を発火させない |
-| native menu close | なし | - | menu binding cleanup の契機であり session restart ではない |
+| DOM 契機 | 扱い・確認すること |
+| --- | --- |
+| 監視中の video が DOM から外れた | 同一 root 内での差し替えの可能性を確認する |
+| 旧 video とは別 identity の新 video を検出した | ID 文字列ではなく DOM node identity で判定する |
+| playback root が DOM から外れた | root の再探索が必要になる |
+| SPA target change を検出した | URL だけで判断せず、target の変化を確認する |
+| seek が発生した | seek 自体を再初期化の契機にしない |
+| native menu close | menu binding の解放契機であり、session restart とは区別する |
+
+理由コードの定義は `docs/minimal-panel-architecture.md` §18 を参照する。
+この表では、検出・理由選択・開始停止を担当する module の分担を定義しない。
 
 ## 5. module への反映
 
