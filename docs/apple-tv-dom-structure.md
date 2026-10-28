@@ -128,7 +128,7 @@
 - 再起動理由は `video-disconnected`、`video-replaced`、`playback-root-disconnected`、`spa-target-changed` を基本候補とする
 - video disconnect または video replacement を検出したら、旧 session を停止し、新 video の readiness を待って session を開始する
 - seek は session 再生成の契機にしない
-- seek 後は既存 track binding を維持し、`cuechange` による更新再開を待つ
+- seek 自体を理由に既存 track binding を作り直さない。history の時刻更新と source 更新による truth 再構築の区別は、`docs/minimal-panel-architecture.md` §13 を参照する
 - listener、observer、timer、track binding、拡張 DOM の owner は 1 つに限定する
 - session の停止時は、track binding、cue listener、native menu binding、layout observer、panel host、controls をそれぞれの owner から確実に dispose する
 - SPA 遷移、再描画、seek の詳細観測は `docs/apple-tv-dom-observations.md` を参照する

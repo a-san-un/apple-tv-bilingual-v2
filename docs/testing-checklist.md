@@ -538,7 +538,7 @@ small integration test で確認する項目:
 - [ ] track が一部だけの途中状態でも、source、listener、panel host が重複しない。
 - [ ] ready 到達後に primary / secondary track を解決できる。
 - [ ] waiting 中に拡張を OFF にした場合、retry、timer、observer が停止する。
-- [ ] panel または debug UI が `dialog.playback-view` より前面に表示され、再生画面内で見える。
+- [ ] panel または debug UI が `dialog.playback-view` 配下に mount され、再生画面内で見える。
 - [ ] 作品切替または新しい video への切替後に、古い UI、listener、waiting 状態が残らない。
 - [ ] 再生終了または戻る操作後に、panel または debug UI が通常ページへ残らない。
 - [ ] Apple TV+ native 字幕メニュー操作の前後で session が停止状態に固定されず、必要に応じて waiting から自然に復帰できる。
@@ -561,6 +561,7 @@ small integration test で確認する項目:
 
 対象ファイル:
 - `src/subtitles/subtitle-source.ts`
+- `src/subtitles/subtitle-session.ts`
 - `src/subtitles/subtitle-history.ts`
 - `src/content/session-lifecycle.ts`
 
@@ -585,6 +586,7 @@ small integration test で確認する項目:
 
 対象ファイル:
 - `src/subtitles/subtitle-source.ts`
+- `src/subtitles/subtitle-session.ts`
 - `src/subtitles/subtitle-history.ts`
 - `src/panel/panel-renderer.ts`
 - `src/content/session-lifecycle.ts`
@@ -593,14 +595,16 @@ small integration test で確認する項目:
 - [ ] seek 前後で playback session identity が変わらない。
 - [ ] seek 前後で primary / secondary track binding が重複しない。
 - [ ] seek 後に panel の current / past / future が更新される。
-- [ ] seek 後に cuechange から字幕表示が復帰する。
+- [ ] seek 後は、保持済み truth と現在時刻から current / past / future が更新される。
+- [ ] seek 後に cuechange が発生した場合も、新しい cue の内容が反映される。
 - [ ] seek 後に panel host、layout observer、native menu listener が再生成されない。
 - [ ] seek 後に二重 listener による重複描画が発生しない。
 
 期待結果:
 - seek は restart reason ではない。
 - seek により session、panel host、layout observer、native menu listener を再生成しない。
-- seek 後は既存の track binding と cuechange 処理を使って current / past / future を現在位置へ追従させる。
+- seek 自体を理由に cue 本文の再取得や block の再構築を行わず、保持済み truth から history を現在位置へ更新する。
+- source の更新や未取得 cue の読込みによる truth の再構築は、時刻だけの更新とは分けて確認する。
 - seek 後に同じ cue が重複して描画されない。
 
 実施タイミング:
@@ -713,6 +717,7 @@ small integration test で確認する項目:
 - `src/shared/dispose.ts`
 - `src/panel/panel-host.ts`
 - `src/subtitles/subtitle-source.ts`
+- `src/subtitles/subtitle-session.ts`
 - `src/controls/on-off-toggle.ts`
 - `src/controls/panel-open-close-button.ts`
 
@@ -762,7 +767,15 @@ small integration test で確認する項目:
 
 ## 回帰確認項目
 
-変更のたびに最低限見る項目:
+各変更単位では、変更した機能と影響を受ける接続先について、関連する自動テストとブラウザ確認を行う。
+
+接続を変更したときや Phase の区切りでは、個別の確認に加えて、
+`docs/implementation-workflow.md` の「フェーズごとの検証ルール」と該当 Phase の完了条件に従い、全体を確認する。
+リリース前には「手動スモークテスト最小セット」全体を確認する。
+
+確認範囲を絞ることを理由に、必須の検証や Phase の完了条件を省略しない。
+
+回帰確認項目:
 - popup 設定の保存と再読込が壊れていない。
 - 起動時に OFF 開始である。
 - 設定が incomplete / error の場合、字幕接続を開始しない。
@@ -797,31 +810,8 @@ small integration test で確認する項目:
 
 ## 不具合報告時に残すべき観測情報
 
-最低限残す情報:
-- 発生日時
-- ブランチ名
-- コミット ID
-- 再現手順
-- 実行した操作順
-- 発生タイミング
-- 対象コンテンツ
-- `primaryLang`
-- `secondaryLang`
-- `extensionEnabled`
-- `panelOpen`
-- 採用された primary track 情報
-- 採用された secondary track 情報
-- current subtitle の内容
-- `SubtitleBlock[]` 件数
-- current の有無と past / future の件数
-- active session の識別情報
-- layout 状態
-- restart reason
-- readiness 状態
-- `textTracks.length`
-- console log
-- 画面スクリーンショット
-- DOM 残留があれば Elements の状態
+基本情報は、以下の報告テンプレートにまとめる。
+DOM 残留がある場合は、Elements の状態も残す。
 
 あるとよい追加情報:
 - video 差し替え前後の識別情報
@@ -838,7 +828,10 @@ small integration test で確認する項目:
 - 発生日時:
 - ブランチ名:
 - コミット ID:
+- 対象コンテンツ:
 - 再現手順:
+- 実行した操作順:
+- 発生タイミング:
 - 期待結果:
 - 実際の結果:
 - `primaryLang`:
@@ -858,6 +851,7 @@ small integration test で確認する項目:
 - layout:
 - console log:
 - スクリーンショット:
+- DOM 残留時の Elements の状態:
 - 補足:
 ```
 
@@ -929,8 +923,10 @@ small integration test で確認する項目:
 - 期待結果: session identity は維持され、シーク後に current 字幕と panel 表示が現在位置へ復帰する。
 
 手順 6:
-- native subtitle UI または設定変更で字幕を切り替える。
-- 期待結果: `TextTrack.mode === "showing"` を基準に採用 track と表示が新しい状態へ追従する。
+- native subtitle UI で字幕を切り替え、「native subtitle menu 同期の確認項目」に従って確認する。
+- 期待結果: select の値だけで確定せず、適切なタイミングで track 状態を再確認し、採用 track と表示が新しい状態へ追従する。
+- popup でも言語設定を変更・保存し、保存済み設定が再生中の字幕処理へ反映されることを別に確認する。
+- 期待結果: `docs/settings-spec.md` §12 に従い、保存成功後に保存済み設定を再読込して track と表示を更新する。保存失敗時は新設定を反映しない。
 
 手順 7:
 - 別エピソードまたは次話へ遷移する。

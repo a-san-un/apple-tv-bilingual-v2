@@ -723,8 +723,12 @@ DOM 上で観測した変化と、再初期化に使う理由コードは区別�
 新しい理由コードを採用する場合は、検出元、既存コードとの対応、影響するテストを確認し、
 `src/shared/types.ts` と §18 を同時に更新する。
 
-`seek` は restart reason に含めない。  
-seek 後は同じ video、同じ track binding、同じ session を維持し、`cuechange` による字幕更新の再開を待つ。
+`seek` は restart reason に含めない。
+seek 自体を理由に、video、track binding、session を作り直さない。
+
+再生時刻の更新や seek 後は、保持済みの `SubtitleBlock[]` と現在時刻から history を導出する。
+source の更新や未取得 cue の読込みに伴う truth の再構築とは区別し、
+seek 自体を理由に cue 本文を再取得したり、block を再構築したりしない。
 
 restart 時は、新 session を開始する前に旧 session が所有する resource を一度だけ dispose する。
 
