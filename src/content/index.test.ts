@@ -10,12 +10,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolvePlaybackTarget } from './playback-root';
 import { createSessionLifecycle, type SessionStateListener } from './session-lifecycle';
 import { createSessionDebugBadge } from './debug-badge';
+import { attachSubtitleSnapshotLog } from './debug-subtitle-log';
 import { loadSettings } from '../settings/settings-store';
 import type { PlaybackTarget, RestartReason, SessionState, UiStateStore } from '../shared/types';
 import { createUiStateStore } from '../ui/ui-state';
 
 vi.mock('./session-lifecycle', () => ({ createSessionLifecycle: vi.fn() }));
 vi.mock('./debug-badge', () => ({ createSessionDebugBadge: vi.fn() }));
+vi.mock('./debug-subtitle-log', () => ({ attachSubtitleSnapshotLog: vi.fn() }));
 vi.mock('../settings/settings-store', () => ({ loadSettings: vi.fn() }));
 vi.mock('./playback-root', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./playback-root')>();
@@ -34,6 +36,7 @@ const observe = vi.fn();
 const disconnect = vi.fn();
 const dispose = vi.fn();
 const badgeDispose = vi.fn();
+const subtitleLogDispose = vi.fn();
 const start = vi.fn((target: PlaybackTarget | null, reason: RestartReason = 'initial-start') => {
   state = target === null
     ? { status: 'waiting', target: null, waiting: null, reason }
@@ -65,8 +68,11 @@ beforeEach(async () => {
   vi.mocked(createSessionDebugBadge).mockReturnValue({
     update: vi.fn(), updateSubtitle: vi.fn(), dispose: badgeDispose,
   });
+  vi.mocked(attachSubtitleSnapshotLog).mockReturnValue({ dispose: subtitleLogDispose });
   vi.mocked(createSessionLifecycle).mockReturnValue({
     getState: () => state,
+    getSubtitleSnapshot: () => null,
+    subscribeSubtitle: () => () => {},
     start,
     stop,
     dispose,
@@ -168,5 +174,22 @@ describe('content entry の target 再評価', () => {
     expect(resolvePlaybackTarget).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+
+describe('字幕snapshotログの配線', () => {
+  it('開発用フラグで接続し、lifecycleより先に破棄する', () => {
+    expect(attachSubtitleSnapshotLog).toHaveBeenCalledTimes(1);
+    expect(attachSubtitleSnapshotLog).toHaveBeenCalledWith(expect.objectContaining({ getSubtitleSnapshot: expect.any(Function), subscribeSubtitle: expect.any(Function) }), true);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(subtitleLogDispose).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    const logOrder = subtitleLogDispose.mock.invocationCallOrder[0];
+    const lifecycleOrder = dispose.mock.invocationCallOrder[0];
+    if (logOrder === undefined || lifecycleOrder === undefined) {
+      throw new Error('both cleanup calls must exist');
+    }
+    expect(logOrder).toBeLessThan(lifecycleOrder);
   });
 });

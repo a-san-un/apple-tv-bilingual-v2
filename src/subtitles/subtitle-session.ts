@@ -5,17 +5,21 @@
  * track 一覧の追加・削除と、未取得 track の cue 読込みに応じて採用結果を再評価する。
  * source、その購読、track 一覧と video の再生イベントの監視を所有する。
  * playback session 単位で生成され、返す dispose は session-lifecycle.ts が保持・実行する。
- * readiness 待機、mode 変更、字幕 truth の構築、DOM 描画、native menu 同期は担当しない。
+ * truth 構築と history 導出は純関数へ委譲し、結果の保持と更新・解放を所有する。
+ * readiness 待機、mode 変更、DOM 描画、native menu 同期は担当しない。
  */
 import type { ReadySettings } from '../settings/settings-store';
 import { createDisposeBag } from '../shared/dispose';
 import { createSubtitleLogger, type Logger } from '../shared/log';
 import type {
     Disposable,
+    DisposeFn,
     LanguageCode,
     ResolvedSubtitleTrack,
     ResolvedTrackPair,
     SubtitleSourceChange,
+    SubtitleBlock,
+    SubtitleHistorySnapshot,
 
     SubtitleTrackRole,
 } from '../shared/types';
@@ -28,6 +32,21 @@ import {
     resolveTrackPair,
     summarizeTrack,
 } from './text-track-resolver';
+
+import { buildSubtitleBlocks } from './subtitle-block-builder';
+import { deriveSubtitleHistory } from './subtitle-history';
+
+/** session の取得境界。cue・track・video の参照を含めない。 */
+export type SubtitleSessionSnapshot = {
+    blocks: SubtitleBlock[];
+    history: SubtitleHistorySnapshot;
+};
+
+/** データの取得と破棄を提供する字幕接続。 */
+export type SubtitleSession = Disposable & {
+    getSnapshot(): SubtitleSessionSnapshot;
+    subscribe(listener: () => void): DisposeFn;
+};
 
 /** cue の読込みを再確認する video のイベント。独自 timer は使わない。 */
 const PLAYBACK_SIGNALS = [
@@ -86,12 +105,12 @@ type TrackResolutionReason =
  * 一覧変化と未取得 track の cue 読込みを再評価し、同じ採用結果なら再 bind しない。
  *
  * @param options video、設定、fallback と任意の logger・観測 callback。
- * @returns lifecycle が保持し、停止・再開始・破棄時に実行する Disposable。
+ * @returns snapshot の取得と、停止・再開始・破棄時の dispose を提供する接続。
  * @throws 初期化を継続できない場合。その cleanup も失敗した場合は AggregateError。
  */
 export const createSubtitleSession = (
     options: SubtitleSessionOptions,
-): Disposable => {
+): SubtitleSession => {
     const videoEl = options.videoEl;
     const textTracks = videoEl.textTracks;
     const settings = { ...options.settings };
@@ -113,11 +132,116 @@ export const createSubtitleSession = (
     let disposed = false;
     let primaryCueChanges = 0;
     let secondaryCueChanges = 0;
+    let blocks: SubtitleBlock[] = [];
+    let history: SubtitleHistorySnapshot = { current: null, past: [], future: [] };
+    let truthRevision = 0;
+    const snapshotListeners = new Set<{ listener: () => void }>();
 
-    // 本文や track 参照は保持せず、最後に通知した cue 件数だけを覚える。
+    // 読込み完了の検出用に、最後に観測した cue 件数を覚える。
     let observedCueCounts = {
         primary: 0,
         secondary: 0,
+    };
+
+    /** @returns 配列・block をコピーした取得時点のデータ。内部状態は公開しない。 */
+    const getSnapshot = (): SubtitleSessionSnapshot => {
+        const copies = new Map<SubtitleBlock, SubtitleBlock>();
+        const copy = (block: SubtitleBlock): SubtitleBlock => {
+            const existing = copies.get(block);
+            if (existing !== undefined) return existing;
+            const cloned = { ...block };
+            copies.set(block, cloned);
+            return cloned;
+        };
+        return {
+            blocks: blocks.map(copy),
+            history: {
+                current: history.current === null ? null : copy(history.current),
+                past: history.past.map(copy),
+                future: history.future.map(copy),
+            },
+        };
+    };
+
+    /**
+     * データ更新を購読する。登録時の通知や snapshot コピーは行わない。
+     * @param listener 更新後に呼ぶ、引数なしの callback。
+     * @returns 登録単位の解除関数。dispose 後の購読は無効。
+     */
+    const subscribe = (listener: () => void): DisposeFn => {
+        if (disposed) return () => {};
+        const entry = { listener };
+        snapshotListeners.add(entry);
+        return () => { snapshotListeners.delete(entry); };
+    };
+
+    /**
+     * 保持結果の更新後に通知する。古い更新の通知は途中でも打ち切る。
+     * @param revision 通知するデータ更新の世代。
+     */
+    const notifySnapshotChange = (revision: number): void => {
+        for (const entry of [...snapshotListeners]) {
+            if (disposed || revision !== truthRevision) return;
+            if (!snapshotListeners.has(entry)) continue;
+            try {
+                entry.listener();
+            } catch (error) {
+                logger.error('subtitle snapshot listener failed', { error });
+            }
+        }
+    };
+
+    /** 保持済み truth からのみ導出する。不正時刻は空 history として扱う。 */
+    const refreshHistory = (): void => {
+        if (disposed) return;
+        const revision = ++truthRevision;
+        try {
+            const next = deriveSubtitleHistory(blocks, videoEl.currentTime);
+            if (!disposed && revision === truthRevision) {
+                history = next;
+                notifySnapshotChange(revision);
+            }
+        } catch (error) {
+            if (disposed || revision !== truthRevision) return;
+            history = { current: null, past: [], future: [] };
+            if (error instanceof RangeError) {
+                logger.warn('subtitle history input rejected', { error });
+                notifySnapshotChange(revision);
+                return;
+            }
+            logger.error('subtitle history update failed', { error });
+            notifySnapshotChange(revision);
+            throw error;
+        }
+    };
+
+    /** source 更新だけで cue を取得する。入力違反時は古い truth を残さない。 */
+    const rebuildTruth = (): void => {
+        if (disposed || source === null) return;
+        const activeSource = source;
+        const revision = ++truthRevision;
+        let building = false;
+        let nextBlocks: SubtitleBlock[];
+        try {
+            const snapshot = activeSource.getSnapshot();
+            building = true;
+            nextBlocks = buildSubtitleBlocks(snapshot.primaryCues, snapshot.secondaryCues);
+        } catch (error) {
+            if (disposed || revision !== truthRevision || source !== activeSource) return;
+            blocks = [];
+            history = { current: null, past: [], future: [] };
+            if (building && error instanceof RangeError) {
+                logger.warn('subtitle truth input rejected', { error });
+                notifySnapshotChange(revision);
+                return;
+            }
+            logger.error('subtitle truth update failed', { error });
+            notifySnapshotChange(revision);
+            throw error;
+        }
+        if (disposed || revision !== truthRevision || source !== activeSource) return;
+        blocks = nextBlocks;
+        refreshHistory();
     };
 
     /**
@@ -171,6 +295,9 @@ export const createSubtitleSession = (
             primary: snapshot.primaryCueCount,
             secondary: snapshot.secondaryCueCount,
         };
+
+        rebuildTruth();
+        if (disposed) return;
 
         if (onObservation === undefined) {
             return;
@@ -510,7 +637,9 @@ export const createSubtitleSession = (
 
         for (const reason of PLAYBACK_SIGNALS) {
             if (event.type === reason) {
+                const revision = truthRevision;
                 reevaluateUnavailableCues(reason);
+                if (!disposed && revision === truthRevision) refreshHistory();
                 return;
             }
         }
@@ -558,7 +687,11 @@ export const createSubtitleSession = (
 
         // 解除に失敗して listener が残っても、旧接続の処理を実行させない。
         disposed = true;
+        snapshotListeners.clear();
         pendingResolutionReason = null;
+        truthRevision += 1;
+        blocks = [];
+        history = { current: null, past: [], future: [] };
 
         try {
             bag.dispose();
@@ -601,5 +734,5 @@ export const createSubtitleSession = (
         throw error;
     }
 
-    return { dispose };
+    return { dispose, getSnapshot, subscribe };
 };

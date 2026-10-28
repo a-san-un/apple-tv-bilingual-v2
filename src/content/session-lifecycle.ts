@@ -1,6 +1,7 @@
 /**
  * playback session の開始停止、readiness 待機、video 差し替え検知を所有する。
- * 字幕接続の詳細は subtitle-session.ts に委譲し、返された dispose を保持する。
+ * 字幕接続の詳細は subtitle-session.ts に委譲し、データ取得と更新通知だけを中継する。
+ * 中継購読の解除と字幕接続の dispose を、接続単位の bag に保持する。
  * 待機と字幕接続は、旧参照を切り離してから cleanup を試す。
  * track 選定、cue 読取、字幕ログ、panel 描画、native menu 同期は担当しない。
  */
@@ -8,6 +9,8 @@ import { createDisposeBag, type DisposeBag } from '../shared/dispose';
 import type { ReadySettings } from '../settings/settings-store';
 import {
   createSubtitleSession,
+  type SubtitleSession,
+  type SubtitleSessionSnapshot,
   type SubtitleSessionObservation,
 } from '../subtitles/subtitle-session';
 import {
@@ -15,7 +18,6 @@ import {
   resolvePlaybackTarget,
 } from './playback-root';
 import type {
-  Disposable,
   DisposeFn,
   LanguageCode,
   PlaybackTarget,
@@ -33,6 +35,8 @@ export type SessionStateListener = (state: SessionState) => void;
 /** session の状態取得・開始停止・破棄・購読を提供する controller。 */
 export type SessionLifecycleController = {
   getState(): SessionState;
+  getSubtitleSnapshot(): SubtitleSessionSnapshot | null;
+  subscribeSubtitle(listener: () => void): DisposeFn;
   start(target: PlaybackTarget | null, reason?: RestartReason): void;
   stop(): void;
   dispose(): void;
@@ -211,6 +215,8 @@ export const createSessionLifecycle = (
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_READINESS_RETRY_DELAY_MS;
   const scheduleRetry = options.scheduleRetry ?? scheduleTimeoutRetry;
   const listeners = new Set<SessionStateListener>();
+  const subtitleListeners = new Set<{ listener: () => void }>();
+  let subtitleNotificationRevision = 0;
   const waitingBagHolder = createWaitingBagHolder();
 
   // 呼び出し元による設定の変更を、開始済み lifecycle へ伝えない。
@@ -224,7 +230,8 @@ export const createSessionLifecycle = (
       };
 
   let state: SessionState = createInactiveState('idle', null);
-  let subtitleSession: Disposable | null = null;
+  let subtitleSession: SubtitleSession | null = null;
+  let subtitleSessionBag: DisposeBag | null = null;
   let subtitleGeneration = 0;
   let disposed = false;
 
@@ -264,24 +271,42 @@ export const createSessionLifecycle = (
     notify();
   };
 
+  /** データは取得せず更新だけを通知し、再入後に古い通知を続けない。 */
+  const notifySubtitle = (): void => {
+    const generation = subtitleGeneration;
+    const revision = ++subtitleNotificationRevision;
+    for (const entry of [...subtitleListeners]) {
+      if (disposed || generation !== subtitleGeneration || revision !== subtitleNotificationRevision) return;
+      if (!subtitleListeners.has(entry)) continue;
+      try {
+        entry.listener();
+      } catch (error) {
+        console.error('[atv-bilingual:subtitle] subtitle subscriber failed', error);
+      }
+    }
+  };
+
   /** 旧通知を無効化し、字幕接続の破棄と観測情報のクリアを試す。 */
   const releaseSubtitleSession = (): void => {
     const session = subtitleSession;
+    const bag = subtitleSessionBag;
 
     subtitleSession = null;
-    subtitleGeneration += 1;
+    subtitleSessionBag = null;
+    const generation = ++subtitleGeneration;
 
     try {
-      if (session !== null) {
-        session.dispose();
-      }
+      bag?.dispose();
     } catch (error) {
       console.error(
         '[atv-bilingual:cleanup] subtitle session cleanup failed',
         error,
       );
     } finally {
-      notifySubtitleObservation(null);
+      if (generation === subtitleGeneration) {
+        notifySubtitleObservation(null);
+        if (session !== null && generation === subtitleGeneration) notifySubtitle();
+      }
     }
   };
 
@@ -324,10 +349,9 @@ export const createSessionLifecycle = (
     target: PlaybackTarget,
     reason: RestartReason,
   ): void => {
-    waitingBagHolder.dispose();
-    releaseSubtitleSession();
-
     const generation = subtitleGeneration;
+    waitingBagHolder.dispose();
+    if (disposed || generation !== subtitleGeneration) return;
 
     /**
      * 現在の接続からの観測情報だけを中継する。
@@ -349,6 +373,7 @@ export const createSessionLifecycle = (
     };
 
     if (subtitleInput !== null) {
+      const sessionBag = createDisposeBag();
       try {
         const createdSession = createSubtitleSession({
           videoEl: target.videoEl,
@@ -359,14 +384,33 @@ export const createSessionLifecycle = (
             : { onObservation: observeSubtitle }),
         });
 
-        // 初回通知中に停止・再開始された場合、古い接続を保持しない。
+        sessionBag.add(createdSession);
+        // 初期化中に停止・再開始された場合、古い接続を保持しない。
         if (disposed || generation !== subtitleGeneration) {
-          createdSession.dispose();
+          sessionBag.dispose();
           return;
         }
 
         subtitleSession = createdSession;
+        subtitleSessionBag = sessionBag;
+        /** 現在の接続の更新だけを、snapshot を取得せず中継する。 */
+        const relaySubtitle = (): void => {
+          if (!disposed && generation === subtitleGeneration && subtitleSession === createdSession) {
+            notifySubtitle();
+          }
+        };
+        // 逆順 cleanup により、中継購読の解除を session 破棄より先に試す。
+        sessionBag.add(createdSession.subscribe(relaySubtitle));
       } catch (error) {
+        if (subtitleSessionBag === sessionBag) {
+          subtitleSession = null;
+          subtitleSessionBag = null;
+        }
+        try {
+          sessionBag.dispose();
+        } catch (cleanupError) {
+          console.error('[atv-bilingual:cleanup] subtitle session cleanup failed', cleanupError);
+        }
         if (!disposed && generation === subtitleGeneration) {
           notifySubtitleObservation(null);
         }
@@ -383,6 +427,7 @@ export const createSessionLifecycle = (
     }
 
     setState({ status: 'running', target, waiting: null, reason });
+    if (!disposed && generation === subtitleGeneration && subtitleInput !== null) notifySubtitle();
   };
 
   /**
@@ -456,9 +501,12 @@ export const createSessionLifecycle = (
       return;
     }
 
-    // 新しい接続を作る前に、旧字幕接続と retry を止める。
+    // クリア通知中に再入した start / stop を、古い開始処理で上書きしない。
+    const generation = subtitleGeneration + 1;
     releaseSubtitleSession();
+    if (disposed || generation !== subtitleGeneration) return;
     waitingBagHolder.dispose();
+    if (disposed || generation !== subtitleGeneration) return;
     if (target === null) {
       setState({ status: 'waiting', target: null, waiting: null, reason });
       return;
@@ -483,8 +531,11 @@ export const createSessionLifecycle = (
       return;
     }
 
+    const generation = subtitleGeneration + 1;
     releaseSubtitleSession();
+    if (disposed || generation !== subtitleGeneration) return;
     waitingBagHolder.dispose();
+    if (disposed || generation !== subtitleGeneration) return;
     setState(createInactiveState('stopped', state.target));
   };
 
@@ -498,6 +549,23 @@ export const createSessionLifecycle = (
       return cloneState(state);
     },
 
+    /** @returns 現在の接続の写し。接続なし・破棄後は null。取得以外ではコピーしない。 */
+    getSubtitleSnapshot(): SubtitleSessionSnapshot | null {
+      return disposed || subtitleSession === null ? null : subtitleSession.getSnapshot();
+    },
+
+    /**
+     * 字幕データの更新だけを購読する。状態購読・診断通知とは独立する。
+     * @param listener 更新後に引数なしで呼ぶ callback。即時通知はしない。
+     * @returns 登録単位の冪等な解除関数。破棄後の登録は無効。
+     */
+    subscribeSubtitle(listener: () => void): DisposeFn {
+      if (disposed) return () => {};
+      const entry = { listener };
+      subtitleListeners.add(entry);
+      return () => { subtitleListeners.delete(entry); };
+    },
+
     start,
     stop,
 
@@ -508,6 +576,7 @@ export const createSessionLifecycle = (
       }
 
       disposed = true;
+      subtitleListeners.clear();
       releaseSubtitleSession();
       waitingBagHolder.dispose();
       listeners.clear();

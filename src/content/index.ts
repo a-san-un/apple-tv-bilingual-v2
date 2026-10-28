@@ -9,6 +9,7 @@
  * top-level の購読・timer・observer・badge・lifecycle を一度だけ cleanup する。
  */
 import { createSessionDebugBadge } from './debug-badge';
+import { attachSubtitleSnapshotLog } from './debug-subtitle-log';
 import {
   comparePlaybackTargetSnapshots,
   resolvePlaybackTarget,
@@ -28,6 +29,9 @@ const DEBUG_AUTO_ENABLE_SUBTITLES = true;
 
 /** session 状態を観測する debug badge を表示する。 */
 const DEBUG_SESSION_BADGE = true;
+
+/** 字幕本文を含む実機観測ログ。通常利用・配布前はfalseにする。 */
+const DEBUG_SUBTITLE_SNAPSHOT_LOG = true;
 
 /** DOM 変化をまとめ、target 再評価まで待つ時間。ミリ秒単位。 */
 const TARGET_REFRESH_DELAY_MS = 120;
@@ -186,6 +190,7 @@ const bootContentScript = async (): Promise<void> => {
     bag.add(sessionLifecycle);
     bag.add(debugBadge);
     bag.add(clearObserverTimer);
+    bag.add(attachSubtitleSnapshotLog(sessionLifecycle, DEBUG_SUBTITLE_SNAPSHOT_LOG));
 
     bag.add(
       sessionLifecycle.subscribe((state) => {

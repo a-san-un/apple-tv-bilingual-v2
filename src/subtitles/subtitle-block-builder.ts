@@ -2,11 +2,11 @@
  * subtitle-block-builder.ts
  *
  * 両言語の cue snapshot から字幕 truth を構築する純関数。
- * 入力検証・完全重複除去・候補生成・全体選択・block 出力を行う。
+ * 入力検証・完全重複除去・同時刻正規化・候補生成・全体選択・block 出力を行う。
  * track、DOM、source の取得・購読、history は扱わず、資源や入力参照を保持しない。
  */
 import type { SubtitleBlock, SubtitleCueSnapshot } from '../shared/types';
-import { generateSubtitleCandidates, type IndexedCue, type SubtitleMatchCandidate } from './subtitle-block-candidates';
+import { generateSubtitleCandidates, type NormalizedSubtitleUnit, type SubtitleMatchCandidate } from './subtitle-block-candidates';
 
 /**
  * cue の時刻範囲と本文が入力条件を満たすかを確認する。
@@ -21,41 +21,59 @@ const isSupportedCue = (cue: SubtitleCueSnapshot): boolean =>
   cue.text.trim().length > 0;
 
 /**
- * 同言語の完全重複だけを除去する。
- * @param cues 入力検証済みの cue 配列。
- * @returns 最初の入力位置と本文・時刻を保持した、新しい内部表現の配列。
+ * 完全重複除去後、連続する同一開始・終了時刻の cue を1単位にする。
+ * @param cues 全件の検証を済ませた、開始時刻順の同一役割の cue。track は読まない。
+ * @returns 本文順・元の先頭入力位置を保持した新しい単位配列。入力参照は保持しない。
  */
-const deduplicateCues = (cues: readonly SubtitleCueSnapshot[]): IndexedCue[] => {
+const normalizeSubtitleCues = (
+  cues: readonly SubtitleCueSnapshot[],
+): NormalizedSubtitleUnit[] => {
   const seen = new Set<string>();
-  const result: IndexedCue[] = [];
-  cues.forEach((cue, inputIndex) => {
+  const unique = cues.flatMap((cue, inputIndex) => {
     const { startTime, endTime, text } = cue;
     const key = JSON.stringify([startTime, endTime, text]);
-    if (seen.has(key)) return;
+    if (seen.has(key)) return [];
     seen.add(key);
-    result.push({ startTime, endTime, text, inputIndex });
+    return [{ startTime, endTime, text, inputIndex }];
   });
-  return result;
+
+  const units: NormalizedSubtitleUnit[] = [];
+  for (let offset = 0; offset < unique.length;) {
+    const first = unique[offset];
+    if (first === undefined) throw new Error('Missing subtitle cue');
+    const texts = [first.text];
+    let nextOffset = offset + 1;
+    while (nextOffset < unique.length) {
+      const next = unique[nextOffset];
+      if (next === undefined) throw new Error('Missing subtitle cue');
+      if (next.startTime !== first.startTime || next.endTime !== first.endTime) break;
+      texts.push(next.text);
+      nextOffset += 1;
+    }
+    units.push({ ...first, text: texts.join('\n') });
+    offset = nextOffset;
+  }
+  return units;
 };
 
 /**
- * 採用した cue 群から本文と時刻を確定する。
- * @param primary 学習言語の採用 cue。未対応なら空配列。
- * @param secondary 母国語の採用 cue。未対応なら空配列。
- * @returns cue 参照や内部位置を持たない新しい block。
+ * 採用した正規化単位から本文と時刻を確定する。
+ * @param primaryUnits 学習言語の採用単位。未対応なら空配列。
+ * @param secondaryUnits 母国語の採用単位。未対応なら空配列。
+ * @returns unit 参照や内部位置を持たない新しい block。
  */
 const createBlock = (
-  primary: readonly IndexedCue[],
-  secondary: readonly IndexedCue[],
+  primaryUnits: readonly NormalizedSubtitleUnit[],
+  secondaryUnits: readonly NormalizedSubtitleUnit[],
 ): SubtitleBlock => {
-  const timedCues = primary.length > 0 ? primary : secondary;
-  const first = timedCues[0];
+  const timedUnits = primaryUnits.length > 0 ? primaryUnits : secondaryUnits;
+  const first = timedUnits[0];
   if (first === undefined) throw new Error('Cannot create an empty subtitle block');
   return {
     startTime: first.startTime,
-    endTime: timedCues.reduce((end, cue) => Math.max(end, cue.endTime), first.endTime),
-    primaryText: primary.length === 0 ? null : primary.map((cue) => cue.text).join('\n'),
-    secondaryText: secondary.length === 0 ? null : secondary.map((cue) => cue.text).join('\n'),
+    endTime: timedUnits.reduce((end, unit) => Math.max(end, unit.endTime), first.endTime),
+    primaryText: primaryUnits.length === 0 ? null : primaryUnits.map((unit) => unit.text).join('\n'),
+    secondaryText: secondaryUnits.length === 0 ? null : secondaryUnits.map((unit) => unit.text).join('\n'),
   };
 };
 
@@ -80,49 +98,49 @@ export const buildSubtitleBlocks = (
     }
   }
 
-  const primaryInputs = deduplicateCues(primaryCues);
-  const secondaryInputs = deduplicateCues(secondaryCues);
-  const selected = selectSubtitleCandidates(generateSubtitleCandidates(primaryInputs, secondaryInputs));
+  const primaryUnits = normalizeSubtitleCues(primaryCues);
+  const secondaryUnits = normalizeSubtitleCues(secondaryCues);
+  const selected = selectSubtitleCandidates(generateSubtitleCandidates(primaryUnits, secondaryUnits));
   const matches = new Map(selected.map((match) => [match.primaryOffset, match]));
-  const consumedSecondary = new Set<number>();
+  const consumedSecondaryOffsets = new Set<number>();
   const primaryBlocks: SubtitleBlock[] = [];
-  for (let offset = 0; offset < primaryInputs.length;) {
+  for (let offset = 0; offset < primaryUnits.length;) {
     const match = matches.get(offset);
     const primaryCount = match?.primaryCount ?? 1;
-    const primary = primaryInputs.slice(offset, offset + primaryCount);
-    const secondary = match === undefined ? [] : secondaryInputs.slice(
+    const matchedPrimaryUnits = primaryUnits.slice(offset, offset + primaryCount);
+    const matchedSecondaryUnits = match === undefined ? [] : secondaryUnits.slice(
       match.secondaryOffset, match.secondaryOffset + match.secondaryCount);
     if (match !== undefined) {
       for (let i = 0; i < match.secondaryCount; i += 1) {
-        consumedSecondary.add(match.secondaryOffset + i);
+        consumedSecondaryOffsets.add(match.secondaryOffset + i);
       }
     }
-    primaryBlocks.push(createBlock(primary, secondary));
+    primaryBlocks.push(createBlock(matchedPrimaryUnits, matchedSecondaryUnits));
     offset += primaryCount;
   }
-  const secondaryBlocks = secondaryInputs.flatMap((cue, offset) =>
-    consumedSecondary.has(offset) ? [] : [createBlock([], [cue])]);
+  const secondaryBlocks = secondaryUnits.flatMap((unit, offset) =>
+    consumedSecondaryOffsets.has(offset) ? [] : [createBlock([], [unit])]);
   const blocks: SubtitleBlock[] = [];
-  let secondaryOffset = 0;
+  let secondaryBlockOffset = 0;
   for (const primaryBlock of primaryBlocks) {
-    while (secondaryOffset < secondaryBlocks.length) {
-      const secondaryBlock = secondaryBlocks[secondaryOffset];
+    while (secondaryBlockOffset < secondaryBlocks.length) {
+      const secondaryBlock = secondaryBlocks[secondaryBlockOffset];
       if (secondaryBlock === undefined) throw new Error('Missing secondary block');
       if (secondaryBlock.startTime >= primaryBlock.startTime) break;
       blocks.push(secondaryBlock);
-      secondaryOffset += 1;
+      secondaryBlockOffset += 1;
     }
     blocks.push(primaryBlock);
   }
-  blocks.push(...secondaryBlocks.slice(secondaryOffset));
+  blocks.push(...secondaryBlocks.slice(secondaryBlockOffset));
   return blocks;
 };
 
-/** 採用列の内部表現。後続を共有し、比較中の配列コピーを避ける。 */
+/** 単位ベースの採用列。後続を共有し、比較中の配列コピーを避ける。 */
 type SelectionPlan = {
   score: number;
   mergeCount: number;
-  matchedCueCount: number;
+  matchedUnitCount: number;
   candidate: SubtitleMatchCandidate | null;
   next: SelectionPlan | null;
 };
@@ -136,8 +154,8 @@ type SelectionPlan = {
 const isBetterSelection = (left: SelectionPlan, right: SelectionPlan): boolean => {
   if (left.score !== right.score) return left.score > right.score;
   if (left.mergeCount !== right.mergeCount) return left.mergeCount < right.mergeCount;
-  if (left.matchedCueCount !== right.matchedCueCount) {
-    return left.matchedCueCount > right.matchedCueCount;
+  if (left.matchedUnitCount !== right.matchedUnitCount) {
+    return left.matchedUnitCount > right.matchedUnitCount;
   }
   let a: SelectionPlan | null = left;
   let b: SelectionPlan | null = right;
@@ -163,7 +181,7 @@ export const selectSubtitleCandidates = (
   const ordered = [...candidates].sort((a, b) =>
     a.primaryOffset - b.primaryOffset || a.secondaryOffset - b.secondaryOffset);
   const empty: SelectionPlan = {
-    score: 0, mergeCount: 0, matchedCueCount: 0, candidate: null, next: null,
+    score: 0, mergeCount: 0, matchedUnitCount: 0, candidate: null, next: null,
   };
   const plans: SelectionPlan[] = [];
   let best = empty;
@@ -184,7 +202,7 @@ export const selectSubtitleCandidates = (
     const plan: SelectionPlan = {
       score: candidate.score + suffix.score,
       mergeCount: (candidate.primaryCount + candidate.secondaryCount === 3 ? 1 : 0) + suffix.mergeCount,
-      matchedCueCount: candidate.primaryCount + candidate.secondaryCount + suffix.matchedCueCount,
+      matchedUnitCount: candidate.primaryCount + candidate.secondaryCount + suffix.matchedUnitCount,
       candidate,
       next: suffix,
     };

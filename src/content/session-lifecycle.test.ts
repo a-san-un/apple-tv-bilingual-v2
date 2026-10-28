@@ -2,14 +2,14 @@
 
 /**
  * readiness、旧 retry の無効化、字幕接続の寿命管理を確認する。
- * subtitle-session は mock にし、開始と dispose の委譲だけを観測する。
+ * subtitle-session は mock にし、寿命管理と字幕データの取得・通知中継を観測する。
  * track 選定、cue 読取、字幕ログは subtitle-session.test.ts で確認する。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionLifecycle } from './session-lifecycle';
 import { resolvePlaybackTarget } from './playback-root';
-import { createSubtitleSession } from '../subtitles/subtitle-session';
+import { createSubtitleSession, type SubtitleSessionSnapshot } from '../subtitles/subtitle-session';
 import type { DisposeFn } from '../shared/types';
 
 vi.mock('../subtitles/subtitle-session', () => ({
@@ -121,7 +121,7 @@ const observeCleanupErrors = () =>
 
 beforeEach(() => {
   createSubtitleSessionMock.mockReset();
-  createSubtitleSessionMock.mockImplementation(() => ({ dispose: vi.fn() }));
+  createSubtitleSessionMock.mockImplementation(() => ({ dispose: vi.fn(), getSnapshot: () => ({ blocks: [], history: { current: null, past: [], future: [] } }), subscribe: () => () => {} }));
 });
 
 afterEach(() => {
@@ -402,7 +402,7 @@ describe('session-lifecycle の字幕接続の委譲', () => {
     (method) => {
       const target = createTarget(1);
       const dispose = vi.fn();
-      createSubtitleSessionMock.mockReturnValue({ dispose });
+      createSubtitleSessionMock.mockReturnValue({ dispose, getSnapshot: () => ({ blocks: [], history: { current: null, past: [], future: [] } }), subscribe: () => () => {} });
       const lifecycle = createSessionLifecycle({ doc: document, subtitle });
       try {
         lifecycle.start(target);
@@ -421,7 +421,7 @@ describe('session-lifecycle の字幕接続の委譲', () => {
     const operations: string[] = [];
     createSubtitleSessionMock.mockImplementation(() => {
       operations.push('start');
-      return { dispose: () => { operations.push('dispose'); } };
+      return { dispose: () => { operations.push('dispose'); }, getSnapshot: () => ({ blocks: [], history: { current: null, past: [], future: [] } }), subscribe: () => () => {} };
     });
     const lifecycle = createSessionLifecycle({ doc: document, subtitle });
     try {
@@ -437,7 +437,7 @@ describe('session-lifecycle の字幕接続の委譲', () => {
     const target = createTarget(1);
     const errorLog = observeCleanupErrors();
     const dispose = vi.fn(() => { throw new Error('cleanup failed'); });
-    createSubtitleSessionMock.mockReturnValue({ dispose });
+    createSubtitleSessionMock.mockReturnValue({ dispose, getSnapshot: () => ({ blocks: [], history: { current: null, past: [], future: [] } }), subscribe: () => () => {} });
     const lifecycle = createSessionLifecycle({ doc: document, subtitle });
     try {
       lifecycle.start(target);
@@ -538,5 +538,283 @@ describe('session-lifecycle の字幕観測の寿命', () => {
     } finally {
       lifecycle.dispose();
     }
+  });
+});
+
+
+/**
+ * 解除後も旧 callback を発火できる字幕接続 mock。
+ * @param text snapshot を識別する本文。
+ * @returns 接続 API と、残存 callback 発火・cleanup 観測用の helper。
+ */
+const createSubtitleDataMock = (text = 'subtitle') => {
+  let callback: (() => void) | undefined;
+  const operations: string[] = [];
+  const unsubscribe = vi.fn(() => { operations.push('unsubscribe'); });
+  const dispose = vi.fn(() => { operations.push('dispose'); });
+  const getSnapshot = vi.fn((): SubtitleSessionSnapshot => {
+    const block = { startTime: 1, endTime: 2, primaryText: text, secondaryText: null };
+    return { blocks: [block], history: { current: block, past: [], future: [] } };
+  });
+  const subscribe = vi.fn((listener: () => void): DisposeFn => {
+    callback = listener;
+    return unsubscribe;
+  });
+  return {
+    session: { dispose, getSnapshot, subscribe }, unsubscribe, dispose, getSnapshot, subscribe, operations,
+    /** 解除後の残存 callback も再現する。 */
+    fire(): void { callback?.(); },
+  };
+};
+
+describe('session-lifecycle の字幕データ境界', () => {
+  const subtitle = { settings: { primaryLang: 'en', secondaryLang: 'ja' } };
+
+  it('idle・waiting・字幕入力なし・dispose後はnullを返す', () => {
+    const scheduler = createRetryScheduler();
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle, scheduleRetry: scheduler.schedule });
+    const withoutSubtitle = createSessionLifecycle({ doc: document });
+    try {
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+      lifecycle.start(null);
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+      lifecycle.start(createTarget());
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+      withoutSubtitle.start(createTarget(1));
+      expect(withoutSubtitle.getSubtitleSnapshot()).toBeNull();
+      lifecycle.dispose();
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+    } finally { lifecycle.dispose(); withoutSubtitle.dispose(); }
+  });
+
+  it('接続後の初回と更新を引数なしで通知し、取得時だけsessionへ委譲する', () => {
+    const data = createSubtitleDataMock();
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const listener = vi.fn();
+    const stateListener = vi.fn();
+    try {
+      lifecycle.subscribeSubtitle(listener);
+      lifecycle.subscribe(stateListener);
+      expect(listener).not.toHaveBeenCalled();
+      lifecycle.start(createTarget(1));
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledWith();
+      expect(data.getSnapshot).not.toHaveBeenCalled();
+      expect(lifecycle.getSubtitleSnapshot()?.history.current?.primaryText).toBe('subtitle');
+      expect(data.getSnapshot).toHaveBeenCalledTimes(1);
+      data.getSnapshot.mockClear();
+      stateListener.mockClear();
+      data.fire();
+      expect(listener).toHaveBeenCalledTimes(2);
+      expect(data.getSnapshot).not.toHaveBeenCalled();
+      expect(stateListener).not.toHaveBeenCalled();
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('ready到達まで接続せず、接続の空snapshotと接続なしのnullを区別する', () => {
+    const data = createSubtitleDataMock();
+    data.getSnapshot.mockReturnValue({ blocks: [], history: { current: null, past: [], future: [] } });
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const scheduler = createRetryScheduler();
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle, scheduleRetry: scheduler.schedule });
+    const listener = vi.fn();
+    try {
+      lifecycle.subscribeSubtitle(listener);
+      const target = createTarget();
+      lifecycle.start(target);
+      expect(listener).not.toHaveBeenCalled();
+      expect(data.subscribe).not.toHaveBeenCalled();
+      setTrackCount(target.videoEl, 1);
+      scheduler.fire();
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(lifecycle.getSubtitleSnapshot()).toEqual({ blocks: [], history: { current: null, past: [], future: [] } });
+      lifecycle.stop();
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('stopでは参照を先に切り、購読解除からdisposeの順で一度だけ実行する', () => {
+    const data = createSubtitleDataMock();
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const listener = vi.fn(() => lifecycle.getSubtitleSnapshot());
+    try {
+      lifecycle.subscribeSubtitle(listener);
+      lifecycle.start(createTarget(1));
+      data.unsubscribe.mockImplementation(() => {
+        expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+        data.operations.push('unsubscribe');
+        data.fire();
+      });
+      lifecycle.stop();
+      expect(listener).toHaveBeenCalledTimes(2);
+      expect(listener).toHaveLastReturnedWith(null);
+      expect(data.operations).toEqual(['unsubscribe', 'dispose']);
+      listener.mockClear();
+      data.fire();
+      lifecycle.stop();
+      lifecycle.dispose();
+      expect(listener).not.toHaveBeenCalled();
+      expect(data.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(data.dispose).toHaveBeenCalledTimes(1);
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('再開始では旧接続のクリアと新接続を通知し、旧callbackを無効化する', () => {
+    const first = createSubtitleDataMock('first');
+    const second = createSubtitleDataMock('second');
+    createSubtitleSessionMock.mockReturnValueOnce(first.session).mockReturnValueOnce(second.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const results: Array<string | null> = [];
+    try {
+      lifecycle.subscribeSubtitle(() => { results.push(lifecycle.getSubtitleSnapshot()?.history.current?.primaryText ?? null); });
+      const target = createTarget(1);
+      lifecycle.start(target);
+      lifecycle.start(target, 'manual-restart');
+      expect(results).toEqual(['first', null, 'second']);
+      first.fire();
+      expect(results).toHaveLength(3);
+      second.fire();
+      expect(results).toEqual(['first', null, 'second', 'second']);
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('購読解除が失敗してもdisposeとnull通知を行い、旧callbackを無効化する', () => {
+    observeCleanupErrors();
+    const data = createSubtitleDataMock();
+    data.unsubscribe.mockImplementation(() => { throw new Error('unsubscribe failed'); });
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const listener = vi.fn();
+    try {
+      lifecycle.subscribeSubtitle(listener);
+      lifecycle.start(createTarget(1));
+      expect(() => lifecycle.stop()).not.toThrow();
+      expect(data.dispose).toHaveBeenCalledTimes(1);
+      expect(lifecycle.getState().status).toBe('stopped');
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+      expect(listener).toHaveBeenCalledTimes(2);
+      data.fire();
+      expect(listener).toHaveBeenCalledTimes(2);
+    } finally { lifecycle.dispose(); }
+  });
+
+  it.each(['create', 'subscribe'] as const)('%s失敗時は接続を残さず、readinessのrunningを維持する', (stage) => {
+    observeCleanupErrors();
+    const data = createSubtitleDataMock();
+    if (stage === 'create') {
+      createSubtitleSessionMock.mockImplementationOnce(() => { throw new Error('create failed'); });
+    } else {
+      data.subscribe.mockImplementationOnce(() => { throw new Error('subscribe failed'); });
+      createSubtitleSessionMock.mockReturnValueOnce(data.session);
+    }
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    try {
+      lifecycle.start(createTarget(1));
+      expect(lifecycle.getState().status).toBe('running');
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+      expect(data.dispose).toHaveBeenCalledTimes(stage === 'subscribe' ? 1 : 0);
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('登録単位の解除と例外分離を行い、通知中の追加は次の更新から呼ぶ', () => {
+    const errorLog = observeCleanupErrors();
+    const data = createSubtitleDataMock();
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const next = vi.fn();
+    let remove = () => {};
+    let once = false;
+    try {
+      lifecycle.subscribeSubtitle(() => { throw new Error('listener failed'); });
+      lifecycle.subscribeSubtitle(() => {
+        if (once) return;
+        once = true;
+        remove(); remove();
+        lifecycle.subscribeSubtitle(next);
+      });
+      remove = lifecycle.subscribeSubtitle(next);
+      lifecycle.start(createTarget(1));
+      expect(next).not.toHaveBeenCalled();
+      data.fire();
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(errorLog).toHaveBeenCalledWith('[atv-bilingual:subtitle] subtitle subscriber failed', expect.any(Error));
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('初回データ通知中のstopがrunningや接続を復活させない', () => {
+    const data = createSubtitleDataMock();
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    let once = false;
+    const next = vi.fn();
+    try {
+      lifecycle.subscribeSubtitle(() => { if (!once) { once = true; lifecycle.stop(); } });
+      lifecycle.subscribeSubtitle(next);
+      lifecycle.start(createTarget(1));
+      expect(lifecycle.getState().status).toBe('stopped');
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(data.dispose).toHaveBeenCalledTimes(1);
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('クリア通知中の再開始を、外側の古い開始要求が上書きしない', () => {
+    const first = createSubtitleDataMock('first');
+    const second = createSubtitleDataMock('second');
+    createSubtitleSessionMock.mockReturnValueOnce(first.session).mockReturnValueOnce(second.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const target = createTarget(1);
+    try {
+      lifecycle.start(target);
+      let once = false;
+      lifecycle.subscribeSubtitle(() => {
+        if (!once && lifecycle.getSubtitleSnapshot() === null) {
+          once = true;
+          lifecycle.start(target, 'video-replaced');
+        }
+      });
+      lifecycle.start(target, 'manual-restart');
+      expect(createSubtitleSessionMock).toHaveBeenCalledTimes(2);
+      expect(lifecycle.getState().reason).toBe('video-replaced');
+      expect(lifecycle.getSubtitleSnapshot()?.history.current?.primaryText).toBe('second');
+      expect(second.dispose).not.toHaveBeenCalled();
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('同一接続の再入更新で古い通知を打ち切り、dispose後の購読も無効にする', () => {
+    const data = createSubtitleDataMock();
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    try {
+      lifecycle.start(createTarget(1));
+      let once = false;
+      lifecycle.subscribeSubtitle(() => { if (!once) { once = true; data.fire(); } });
+      const next = vi.fn();
+      lifecycle.subscribeSubtitle(next);
+      data.fire();
+      expect(next).toHaveBeenCalledTimes(1);
+      lifecycle.dispose();
+      lifecycle.subscribeSubtitle(next)();
+      data.fire();
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+    } finally { lifecycle.dispose(); }
+  });
+
+  it('通知中のdisposeで後続を止め、最終通知を送らない', () => {
+    const data = createSubtitleDataMock();
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const next = vi.fn();
+    lifecycle.subscribeSubtitle(() => { lifecycle.dispose(); });
+    lifecycle.subscribeSubtitle(next);
+    lifecycle.start(createTarget(1));
+    expect(next).not.toHaveBeenCalled();
+    expect(lifecycle.getState().status).toBe('stopped');
+    expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+    expect(data.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(data.dispose).toHaveBeenCalledTimes(1);
   });
 });
