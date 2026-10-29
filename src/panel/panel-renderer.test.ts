@@ -6,7 +6,9 @@
  * mock は afterEach で復元し、document に追加したテスト DOM を除去する。
  * ブラウザの可視性・実寸法・再生経路の購読解除は、このテストでは証明しない。
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as subtitleText from './subtitle-text';
+import { subtitleTextRegressionCases } from './subtitle-text-regression-cases';
 import type { SubtitleBlock } from '../shared/types';
 import { createPanelRenderer, type PanelRenderInput } from './panel-renderer';
 
@@ -28,7 +30,17 @@ const input = (): PanelRenderInput => ({
   extensionEnabled: true, panelOpen: true,
 });
 
+beforeEach(/** 既存の描画契約は変換を恒等関数へ差し替えて確認する。 */ () => {
+  vi.spyOn(subtitleText, 'toSubtitlePlainText').mockImplementation(/**
+   * 本文を変更しないテスト用境界。
+   * @param text 入力本文。
+   * @returns 同じ本文。
+   */ (text) => text);
+  vi.spyOn(console, 'warn').mockImplementation(/** テスト中の警告出力を抑え、呼出しは検証する。 */ () => {});
+});
+
 afterEach(/** mock とテスト DOM を次のケースへ持ち越さない。 */ () => {
+  vi.unstubAllGlobals();
   // 意図的に失敗させた DOM method も復元してから、テスト DOM を除去する。
   vi.restoreAllMocks();
   document.body.replaceChildren();
@@ -164,5 +176,118 @@ describe('panel-renderer', /** この module の契約を検証するケース�
     expect(root.parentElement).toBe(host);
     expect(root.innerHTML).toBe(before);
     expect(remove).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+/** 変換の正しさではなく、helper と描画の接続・失敗分離を確認する。 */
+describe('panel-renderer の表示用本文変換', /** 接続ケースを登録する。 */ () => {
+  it.each(subtitleTextRegressionCases)('$name の変換結果を対応言語だけに表示する', /**
+   * 観測済み結果を返す helper 境界で、受渡しを検証する。標準パーサーの検証ではない。
+   * @param sample 実 cue の入力・期待値。
+   */ (sample) => {
+    const convert = vi.mocked(subtitleText.toSubtitlePlainText).mockReturnValue(sample.expectedPlain);
+    const host = document.createElement('div');
+    const renderer = createPanelRenderer(host);
+    const data = input();
+    data.history.current = { startTime: 0, endTime: 1, primaryText: sample.language === 'en' ? sample.raw : null, secondaryText: sample.language === 'ja' ? sample.raw : null };
+    const before = JSON.stringify(data);
+    try {
+      renderer.render(data);
+      const row = host.querySelector('[data-subtitle-block]')!;
+      expect(row.children[0]?.textContent).toBe(sample.language === 'en' ? sample.expectedPlain : '');
+      expect(row.children[1]?.textContent).toBe(sample.language === 'ja' ? sample.expectedPlain : '');
+      expect(convert).toHaveBeenCalledTimes(1);
+      expect(convert).toHaveBeenCalledWith(sample.raw);
+      expect(JSON.stringify(data)).toBe(before);
+      expect(row.querySelector('ruby, rt, i')).toBeNull();
+      expect(console.warn).not.toHaveBeenCalled();
+    } finally { renderer.dispose(); }
+  });
+
+  it('両言語を独立に変換し、失敗した本文だけ raw へ戻して後続更新も試す', /** 失敗分離と警告抑制を検証する。 */ () => {
+    const error = new Error('conversion failed');
+    const convert = vi.mocked(subtitleText.toSubtitlePlainText).mockImplementation(/**
+     * 片側の失敗を再現する。
+     * @param text 入力本文。
+     * @returns 正常側の表示文字列。
+     * @throws bad 本文の変換失敗。
+     */ (text) => { if (text === '<bad>') throw error; return `plain:${text}`; });
+    const host = document.createElement('div');
+    const renderer = createPanelRenderer(host);
+    const data = input();
+    data.history.future = [{ ...block('<bad>'), secondaryText: '日本語' }, block('next')];
+    const before = JSON.stringify(data);
+    try {
+      renderer.render(data);
+      expect(host.querySelector('[data-subtitle-block]')?.textContent).toBe('<bad>plain:日本語');
+      expect(host.textContent).toContain('plain:next');
+      renderer.render(data);
+      expect(console.warn).toHaveBeenCalledTimes(1);
+      expect(console.warn).toHaveBeenCalledWith('[atv-bilingual:panel] subtitle text conversion failed; using original text', error);
+      expect(host.querySelector('bad')).toBeNull();
+      expect(JSON.stringify(data)).toBe(before);
+      convert.mockReturnValue('recovered');
+      renderer.render(data);
+      expect(host.textContent).not.toContain('<bad>');
+      expect(host.textContent).toContain('recovered');
+    } finally { renderer.dispose(); }
+  });
+
+  it('空の変換結果でも block と欠損側の空行を削除しない', /** null と変換後の空を区別する。 */ () => {
+    const convert = vi.mocked(subtitleText.toSubtitlePlainText).mockReturnValue('');
+    const host = document.createElement('div');
+    const renderer = createPanelRenderer(host);
+    const data = input();
+    data.history.current = { ...block('<b></b>'), secondaryText: null };
+    try {
+      renderer.render(data);
+      const row = host.querySelector('[data-subtitle-block]')!;
+      expect(row.children).toHaveLength(2);
+      expect(row.textContent).toBe('');
+      expect(host.querySelector('p')).toBeNull();
+      expect(convert).toHaveBeenCalledTimes(1);
+    } finally { renderer.dispose(); }
+  });
+
+  it('変換された文字列も HTML として挿入しない', /** helper の出力を安全に表示する。 */ () => {
+    const literal = '<img src=x onerror=alert(1)> & <ruby>字</ruby>';
+    vi.mocked(subtitleText.toSubtitlePlainText).mockReturnValue(literal);
+    const host = document.createElement('div');
+    const renderer = createPanelRenderer(host);
+    const data = input(); data.history.current = { ...block('encoded'), secondaryText: null };
+    try {
+      renderer.render(data);
+      expect(host.querySelector('img, ruby')).toBeNull();
+      expect(host.querySelector('[data-subtitle-block]')?.textContent).toBe(literal);
+    } finally { renderer.dispose(); }
+  });
+
+  it('実 helper の API 不在でも raw を安全表示する', /** 実失敗経路と renderer の fallback を接続して確認する。 */ () => {
+    vi.mocked(subtitleText.toSubtitlePlainText).mockRestore();
+    vi.stubGlobal('VTTCue', undefined);
+    const host = document.createElement('div');
+    const renderer = createPanelRenderer(host);
+    const data = input(); data.history.current = block('<i>raw</i>');
+    try {
+      renderer.render(data);
+      expect(host.querySelector('[data-subtitle-block]')?.firstChild?.textContent).toBe('<i>raw</i>');
+      expect(host.querySelector('i')).toBeNull();
+      expect(console.warn).toHaveBeenCalledTimes(1);
+    } finally { renderer.dispose(); }
+  });
+
+  it('空 history では helper を呼ばない', /** 字幕なしを変換失敗と混同しない。 */ () => {
+    const host = document.createElement('div'); const renderer = createPanelRenderer(host);
+    try { renderer.render(input()); expect(subtitleText.toSubtitlePlainText).not.toHaveBeenCalled(); } finally { renderer.dispose(); }
+  });
+
+  it('dispose 後は変換も再描画もしない', /** 終了後の境界呼出しを防ぐ。 */ () => {
+    const host = document.createElement('div'); const renderer = createPanelRenderer(host);
+    renderer.dispose();
+    const data = input(); data.history.current = block('late');
+    renderer.render(data);
+    expect(subtitleText.toSubtitlePlainText).not.toHaveBeenCalled();
+    expect(host.children).toHaveLength(0);
   });
 });

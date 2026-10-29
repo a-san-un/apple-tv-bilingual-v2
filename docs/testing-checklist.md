@@ -430,6 +430,18 @@ callback 内は観測にとどめ、正常終了・期待値・呼出回数は�
 
 entry の配線・pagehide からの解除到達と実画面確認は、上記接続テストだけで完了としない。
 
+### 字幕本文の表示用変換の回帰ケース
+
+- 固定ケースは `src/panel/subtitle-text-regression-cases.ts`。2026-10-28 の実 cue 観測から、日本語6件・英語6件の raw / expectedPlain / expectedRtCount を保持する。
+- ruby の読み仮名と傍点を除外し、親文字・改行を保持する。c / i の装飾は本文へ混ぜず、音符・句読点・効果音表記・半角および全角空白を保持する。
+- タグのない本文は変更しない。生 cue と truth の本文保持テストとは分ける。
+- helper は `src/panel/subtitle-text.ts`、テストは `src/panel/subtitle-text.test.ts`。手作り fragment で rt 除外・空白と記号の保持・二重解釈防止・失敗伝播を検証する。これは WebVTT パーサー自体の検証ではない。
+- 同じ12ケースを標準 VTTCue の assertion に登録する。API 不在環境では明示的に skip し、成功件数と分ける。jsdom では API 不在を確認済み。モックの成功を実パーサーの成功と扱わない。
+- renderer の接続テストでは helper を観測済み結果へ差し替え、実例12件の言語領域・入力保持・textContent 描画を確認する。実パーサーの成功とは扱わない。
+- 変換失敗時は当該本文だけの raw fallback・他言語と後続更新の継続・renderer ごと一度の警告を確認する。空結果でも block / 空行を保持し、空 history と dispose 後は変換しない。
+- 実 helper の API 不在と renderer の fallback も接続して確認する。実装した helper / renderer の Chrome 実行は未確認で、Console 上の先行検証とは区別する。
+- 実機での変換観測と限界は `docs/apple-tv-dom-observations.md` の「Phase 6: 実 cue の表示用変換の観測」を参照する。
+
 ### panel 表示・自動追従の手動確認
 
 拡張を ON にして panel を開き、次を確認する。

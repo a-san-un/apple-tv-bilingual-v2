@@ -568,3 +568,18 @@ dialog.playback-view
 - バッジ個数やDOM不在は、内部listener・timer・購読の全件解除成功を証明しない。
 - 全作品・全track・全再生条件に一般化しない。
 - track 解決・session の採用判断は `docs/apple-tv-dom-structure.md`、同時刻正規化・truth の仕様は `docs/minimal-panel-architecture.md` を参照する。
+
+
+## Phase 6: 実 cue の表示用変換の観測
+
+観測日: 2026-10-28。ユーザーが Apple TV+ 再生ページの Chrome Console で実行し、結果を共有した。
+入力は共有された `pasted_text_1793192795.txt`。実 cue の text を一時的な `new VTTCue(0, 1, raw)` へコピーし、getCueAsHTML() の fragment から rt を除外して textContent を取得した。fragment はページへ追加せず、実 track の mode・cue・再生位置・panel は変更していない。
+
+- 日本語6サンプルでは、読み仮名「うわさ」「つら」と、3つの rt に入った傍点「・」を除外し、親文字・改行・元の通常本文を保持する結果が得られた。
+- 英語6サンプルでは、c.white.bg_black / i の装飾を除き、音符・アポストロフィ・省略記号・[chuckles] と元の通常本文を保持する結果が得られた。
+- 観測位置は938.519482秒。日本語index 79はsubtitles / showing・372cue、先頭開始86.46116666666667秒〜末尾終了1453.1611666666668秒。英語index 274はcaptions / hidden・215cue、先頭開始702.7131秒〜末尾終了996.9051666666667秒。先頭〜末尾の値は全区間の連続取得を証明しない。
+- cueIndex・track index は当該観測時の位置であり、永続識別子や全作品共通の採用規則ではない。英語の取得範囲・二言語対応づけは本文変換と別問題として残す。
+
+回帰用の入力と期待値は `src/panel/subtitle-text-regression-cases.ts` に固定する。検証の扱いは `docs/testing-checklist.md` の「字幕本文の表示用変換の回帰ケース」を参照する。
+
+限界: 抽出した12サンプルの結果であり、全cue・全作品・未知の構文・失敗時の動作を検証したものではない。製品の変換 helper と renderer への接続はまだなく、ケース固定だけで変換の自動回帰テストが成功したとは扱わない。

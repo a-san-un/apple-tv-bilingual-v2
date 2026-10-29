@@ -412,9 +412,20 @@ panel の描画だけを扱う。
 - panel open state に応じた表示切替
 - empty / unavailable 状態の表示
 - 必要最小限の DOM 更新
+- block の非 null 本文は subtitle-text の helper で表示用へ変換し、textContent で描画する。null は変換せず空行を維持し、変換結果が空でも block は削除しない。
+- 変換失敗は当該本文だけを元の文字列の textContent 表示へ戻し、他言語・後続行・後続更新の変換試行は継続する。警告は renderer ごとに最初の失敗で一度だけ記録し、字幕本文を追加しない。fallback は変換成功と扱わない。
 
 renderer は source、raw cue、`TextTrack` を直接読まない。  
 Apple TV+ 固有 selector や session cleanup 本体も持たない。
+
+### `src/panel/subtitle-text.ts`
+
+- `toSubtitlePlainText(text, parse?)` は文字列だけを受け取り、表示用のプレーンテキストを返す。字幕取得・対応づけ・current 選択はしない。
+- 標準経路は一時 VTTCue の getCueAsHTML() で一度解析し、作業用 fragment の rt を除いて textContent を読む。画面には fragment を挿入しない。
+- ruby の親文字、元の空白・改行・句読点を保持し、読み仮名・傍点・装飾は表示へ持ち込まない。解析後の文字列を再解釈しない。
+- source / truth の本文と builder のタグ保持規則は変更しない。表示側は返された文字列を textContent で描画し、HTML として挿入しない。
+- parse は専用の未接続 fragment を返す差替え境界。戻り値を他と共有しない。helper は参照・キャッシュ・購読を保持しない。
+- API 不在・解析・DOM 操作の失敗は例外で返す。fallback とログは接続時に呼出元が判断する。空結果は空のまま返す。
 
 ### `src/controls/on-off-toggle.ts`
 

@@ -7,6 +7,7 @@
  * 接続側は処理 session 終了時に dispose し、renderer の参照も手放す。
  */
 import type { SubtitleBlock, SubtitleHistoryView } from '../shared/types';
+import { toSubtitlePlainText } from './subtitle-text';
 
 /** 接続側が取得した表示データと現在の表示意思。renderer は保持しない。 */
 export type PanelRenderInput = {
@@ -31,14 +32,19 @@ export type PanelRenderer = {
  *
  * @param doc host が所属する document。
  * @param text block の本文。null は本文なしとして空行の高さを確保する。
+ * @param convert 変換失敗時の fallback を含む表示用変換。
  * @returns HTML として解釈せず本文を表示する要素。
  */
-const createTextRegion = (doc: Document, text: string | null): HTMLElement => {
+const createTextRegion = (
+  doc: Document,
+  text: string | null,
+  convert: (text: string) => string,
+): HTMLElement => {
   const region = doc.createElement('div');
   region.style.whiteSpace = 'pre-wrap';
   region.style.minHeight = '1lh';
-  // 字幕本文を HTML として実行せず、block の文字列をそのまま表示する。
-  region.textContent = text ?? '';
+  // 変換結果も fallback も HTML として挿入せず、欠損側の領域を維持する。
+  region.textContent = text === null ? '' : convert(text);
   return region;
 };
 
@@ -48,12 +54,14 @@ const createTextRegion = (doc: Document, text: string | null): HTMLElement => {
  * @param doc host が所属する document。
  * @param block history に含まれる block。変更しない。
  * @param current history が選択した current かどうか。
+ * @param convert 表示用本文の変換境界。
  * @returns 学習言語、母国語の順で本文を持つ行。
  */
 const createBlockRow = (
   doc: Document,
   block: SubtitleBlock,
   current: boolean,
+  convert: (text: string) => string,
 ): HTMLElement => {
   const row = doc.createElement('div');
   row.dataset.subtitleBlock = current ? 'current' : 'other';
@@ -62,8 +70,8 @@ const createBlockRow = (
     row.style.fontWeight = '700';
   }
   row.append(
-    createTextRegion(doc, block.primaryText),
-    createTextRegion(doc, block.secondaryText),
+    createTextRegion(doc, block.primaryText, convert),
+    createTextRegion(doc, block.secondaryText, convert),
   );
   return row;
 };
@@ -83,6 +91,25 @@ export const createPanelRenderer = (hostEl: HTMLElement): PanelRenderer => {
   root.hidden = true;
   // host の所有権は移さず、renderer が破棄する子領域だけを追加する。
   hostEl.append(root);
+  let conversionFailureReported = false;
+
+  /**
+   * 本文を表示用へ変換し、失敗時も元の文字列で描画を継続する。
+   * @param text 入力 block の本文。変更・保持しない。
+   * @returns 変換結果、または失敗した場合の元本文。
+   */
+  const convertText = (text: string): string => {
+    try {
+      return toSubtitlePlainText(text);
+    } catch (error) {
+      // 毎回の描画で警告を連発せず、後続本文の変換試行は止めない。
+      if (!conversionFailureReported) {
+        conversionFailureReported = true;
+        console.warn('[atv-bilingual:panel] subtitle text conversion failed; using original text', error);
+      }
+      return text;
+    }
+  };
 
   return {
     /**
@@ -97,13 +124,13 @@ export const createPanelRenderer = (hostEl: HTMLElement): PanelRenderer => {
       const doc = root.ownerDocument;
       const fragment = doc.createDocumentFragment();
       for (const block of input.history.past) {
-        fragment.append(createBlockRow(doc, block, false));
+        fragment.append(createBlockRow(doc, block, false, convertText));
       }
       if (input.history.current !== null) {
-        fragment.append(createBlockRow(doc, input.history.current, true));
+        fragment.append(createBlockRow(doc, input.history.current, true, convertText));
       }
       for (const block of input.history.future) {
-        fragment.append(createBlockRow(doc, block, false));
+        fragment.append(createBlockRow(doc, block, false, convertText));
       }
       // 空 history だけでは未取得と track 不在を区別できないため、原因を断定しない。
       if (fragment.childNodes.length === 0) {
