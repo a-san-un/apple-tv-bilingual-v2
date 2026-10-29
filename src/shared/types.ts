@@ -78,6 +78,15 @@ export type SubtitleCueSnapshot = {
   track: ResolvedSubtitleTrack | null;
 };
 
+/** 1言語の元時刻と本文。実cue・track・DOMの参照を含めない。 */
+export type TimedSubtitleText = Readonly<Pick<SubtitleCueSnapshot, 'startTime' | 'endTime' | 'text'>>;
+
+/** 言語別字幕を保持するtruthの型。対訳ペアを作らず、空の言語は空配列で表す。 */
+export type SubtitleTimeline = Readonly<{
+  primary: readonly TimedSubtitleText[];
+  secondary: readonly TimedSubtitleText[];
+}>;
+
 /**
  * `subtitle-source.ts` が返す source 全体の snapshot。
  * bind 中の track pair と、その track から読んだ cue 一覧だけを持つ。
@@ -113,15 +122,19 @@ export type SubtitleBlock = {
   secondaryText: string | null;
 };
 
-/**
- * panel renderer が読む current / past / future の snapshot。
- * truth から導出した runtime 表現であり、保存しない。
- */
-export type SubtitleHistorySnapshot = {
+/** 移行中の旧再生経路用。新しいtimelineの分類結果とは区別する。 */
+export type LegacySubtitleHistorySnapshot = {
   current: SubtitleBlock | null;
   past: SubtitleBlock[];
   future: SubtitleBlock[];
 };
+
+/** 同じtimelineを元時刻で分類した読み取り結果。現在も複数件・0件を許可する。 */
+export type SubtitleHistorySnapshot = Readonly<{
+  past: SubtitleTimeline;
+  current: SubtitleTimeline;
+  future: SubtitleTimeline;
+}>;
 
 /**
  * `SubtitleHistorySnapshot` を view 層で短く参照するための別名。

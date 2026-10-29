@@ -160,8 +160,8 @@
 | 約 0.6 秒後 | 同一 root を維持 | 新 video 検出 | 同じ ID だが別 node |
 | 約 2 秒後 | 同一 root を維持 | 新 video 維持 | `textTracks` が安定状態へ到達 |
 
-- 今回の観測範囲では root replacement は確認していない。
-- 今回確認したのは root 維持下での video replacement である。
+- 本節の観測範囲では root replacement は確認していない。
+- 本節で確認したのは root 維持下での video replacement である。
 - DOM 契機と再起動理由の採用判断は `docs/apple-tv-dom-structure.md` に委ねる。
 
 ## 5. `textTracks` と字幕 track
@@ -262,7 +262,7 @@
 - `input`、`change`、RAF後、500ms後のどこで `showing` が切り替わるかは切替方向で異なった。
 - select の値・表示テキストは一時的に旧値へ戻る事例があった。
 - menu の DOM 表示だけを字幕の真実源にはできない。
-- `TextTrack.mode === "showing"` は、今回の観測では表示中字幕判定に最も安定していた。
+- `TextTrack.mode === "showing"` は、本節の観測では表示中字幕判定に最も安定していた。
 - active cue は showing track 以外の hidden track にも存在した。
 
 ### 6.3 native menu close 観測項目
@@ -382,8 +382,8 @@
 | 明示的な別エピソード移動時の root / video 差し替え | ブラウザ | 未確認 | 次回確認 |
 | 次話自動再生時の root / video 差し替え | ブラウザ | 未確認 | 次回確認 |
 
-- 今回確認したのは、SPA 内で連続再生コンテンツが切り替わる際の video replacement である。
-- PSA、別作品の宣伝、本編前あらすじのどの境界で video replacement が起きたかは、今回のログだけでは特定できない。
+- 本節で確認したのは、SPA 内で連続再生コンテンツが切り替わる際の video replacement である。
+- PSA、別作品の宣伝、本編前あらすじのどの境界で video replacement が起きたかは、本節のログだけでは特定できない。
 - seek は session 再生成の契機とせず、同一 session 内で cuechange により回復できる前提を検証できた。
 - 新 video の `textTracks` は段階的に増えるため、video 発見時点だけで字幕 source を bind してはならない。
 
@@ -564,10 +564,10 @@ dialog.playback-view
 
 - 対象英語cueが空だった理由は未特定。未読込み、途中での削除、その他の要因を区別できていない。再読み込みだけを原因・解決策と断定しない。
 - 読込み済みcue数を作品全体の字幕件数とみなさない。
-- 終了前後のvideo node identityや、別作品・別エピソード切替は今回確認していない。
+- 終了前後のvideo node identityや、別作品・別エピソード切替は本節の観測では確認していない。
 - バッジ個数やDOM不在は、内部listener・timer・購読の全件解除成功を証明しない。
 - 全作品・全track・全再生条件に一般化しない。
-- track 解決・session の採用判断は `docs/apple-tv-dom-structure.md`、同時刻正規化・truth の仕様は `docs/minimal-panel-architecture.md` を参照する。
+- track 解決・session の採用判断は `docs/apple-tv-dom-structure.md`、同時刻正規化・元の字幕データ の仕様は `docs/minimal-panel-architecture.md` を参照する。
 
 
 ## Phase 6: 実 cue の表示用変換の観測

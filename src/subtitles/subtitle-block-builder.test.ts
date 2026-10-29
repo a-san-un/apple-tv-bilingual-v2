@@ -9,7 +9,7 @@ import type { SubtitleBlock, SubtitleCueSnapshot } from '../shared/types';
 import { buildSubtitleBlocks, selectSubtitleCandidates } from './subtitle-block-builder';
 import * as blockCandidates from './subtitle-block-candidates';
 import type { SubtitleMatchCandidate } from './subtitle-block-candidates';
-import { deriveSubtitleHistory } from './subtitle-history';
+import { deriveLegacySubtitleHistory } from './subtitle-history';
 
 /**
  * track を持たない最小テスト入力を作る。
@@ -619,7 +619,7 @@ describe('連続した同時刻cueの正規化', () => {
       timedCue(559.0591666666667, 561.8111666666666, 'それに 採取は\nお前の担当だろ？'),
     ]);
     expect(blocks).toEqual([{ startTime: start, endTime: end, primaryText: texts.join('\n'), secondaryText: 'それに 採取は\nお前の担当だろ？' }]);
-    const history = deriveSubtitleHistory(blocks, 561.034888);
+    const history = deriveLegacySubtitleHistory(blocks, 561.034888);
     expect(history.current?.primaryText).toBe(texts.join('\n'));
     expect(history.future).toEqual([]);
   });

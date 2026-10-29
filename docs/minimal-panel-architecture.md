@@ -8,7 +8,7 @@
 - 各ファイルの責務
 - 依存方向
 - データフロー
-- `SubtitleBlock[]` を中心にした truth の扱い
+- `SubtitleTimeline` を中心にした 元の字幕データ の扱い
 - playback session の開始・停止・cleanup
 - session restart と cleanup
 - 右側字幕 panel の設計
@@ -47,10 +47,16 @@ architecture は、責務境界、依存方向、データフロー、playback s
 | secondary subtitle | 母国語として表示する字幕 |
 | subtitle track | `TextTrack` を正規化した字幕 track 情報 |
 | subtitle source | 字幕取得と track binding をまとめる窓口 |
-| truth | UI の正本となる内部データ |
-| `SubtitleBlock` | 時刻、primary 字幕、secondary 字幕を持つ字幕表示単位 |
-| `SubtitleBlock[]` | 字幕 truth の正本となる block 配列 |
-| current / past / future | 現在、過去、未来として panel に表示する字幕区分 |
+| 元の字幕データ | 各言語の本文・開始時刻・終了時刻を独立して保持する正本。表示上の結合で変更しない |
+| 学習言語枠 | 開始・終了時刻が両方完全一致する学習言語字幕を、元の順序で収めた枠 |
+| 結合候補 | 同じ1件の母国語字幕が正の時間だけ重なる、連続した複数の学習言語枠 |
+| 表示ブロック | 会話字幕を学習言語が上・母国語が下になるよう収めた表示単位。元の字幕データから導出する |
+| 補助字幕 | `〝…〟`の囲み範囲を会話表示から分離したもの。画面内文字の意味分類を完全に行うものではない |
+| ブロックの現在状態 | ブロックの最早開始以上・最遅終了未満の再生位置。元字幕単位の有効状態とは区別する |
+| `TimedSubtitleText` | 1言語の元の開始・終了時刻と本文を持つ字幕単位 |
+| `SubtitleTimeline` | primary / secondary の字幕単位を別配列に保持する元の字幕データの正本 |
+| `SubtitleHistorySnapshot` | 元字幕単位の過去・現在・未来を持つ既存の読み取り結果。表示ブロックの状態とは別 |
+| past / current / future | 終了済み・表示期間内・未開始の字幕区分。各区分は言語別配列を持つ |
 | panel | 右側字幕 panel |
 | panel host | panel を mount するために拡張が所有する DOM 要素 |
 | ON/OFF toggle | 再生画面下部に置く、拡張機能全体の ON/OFF 制御 |
@@ -68,7 +74,7 @@ architecture は、責務境界、依存方向、データフロー、playback s
 | subtitle readiness | 字幕処理を開始してよいかを判定する状態 |
 | restart reason | session を再初期化する理由 |
 | discovery module | resource を所有せず、対象を見つけて返すだけの module |
-| view helper | truth から renderer 向けの読み取り結果を導出する純粋な helper |
+| view helper | 元の字幕データ から renderer 向けの読み取り結果を導出する純粋な helper |
 | available width | 既存 UI を含む再生画面領域と panel の再配置に使う利用可能な横幅 |
 | waiting state | `textTracks` の準備待ちとして `session-lifecycle.ts` が一時的に持つ状態 |
 | language option | popup UI に表示する固定の候補言語 |
@@ -86,7 +92,7 @@ architecture は、責務境界、依存方向、データフロー、playback s
 
 - module 構成
 - module ごとの責務境界
-- truth の流れ
+- 元の字幕データ の流れ
 - session と cleanup
 - session restart と readiness 待機
 - panel / toggle / panel 開閉ボタン / layout / state の関係
@@ -130,8 +136,8 @@ DOM 固有の根拠が必要な場合だけ `docs/apple-tv-dom-structure.md` を
 v2 の設計原則は次の通りとする。
 
 - `src/content/index.ts` は起動入口と配線だけを担う thin coordinator とする
-- 字幕取得、track 解決、truth 構築、panel 描画、session cleanup は分離する
-- truth は `SubtitleBlock[]` を中心に扱う
+- 字幕取得、track 解決、元の字幕データ 構築、panel 描画、session cleanup は分離する
+- 元の字幕データ は `SubtitleTimeline` を中心に扱う
 - renderer は source を直接読まない
 - source は panel DOM を直接扱わない
 - listener / timer / observer / binding / DOM の owner は1つに限定する
@@ -143,9 +149,9 @@ v2 の設計原則は次の通りとする。
 - panel 開閉ボタンは panel open state だけを扱う
 - `ui-state.ts` は small store とする
 - 保存設定と runtime state は混ぜない
-- subtitle truth、UI state、layout state は別物として扱う
+- 元の字幕データ、UI state、layout state は別物として扱う
 - `ui-state.ts` は `extensionEnabled` と `panelOpen` だけを扱い、寸法、style、observer、layout timer を持たない
-- `player-layout.ts` は `PlayerLayoutState`、layout style、layout observer、layout timer だけを扱い、字幕 truth と ON/OFF 操作の意味づけを持たない
+- `player-layout.ts` は `PlayerLayoutState`、layout style、layout observer、layout timer だけを扱い、元の字幕データ と ON/OFF 操作の意味づけを持たない
 - ON/OFF toggle は `extensionEnabled` の更新だけを要求する
 - panel 開閉ボタンは `panelOpen` の更新だけを要求する
 - 既存版の複雑な分岐や暫定回避策は、そのまま持ち込まない
@@ -170,17 +176,15 @@ src/
 │  ├─ subtitle-source.ts
 │  │  └─ 字幕取得と track binding の統一窓口
 │  ├─ subtitle-session.ts
-│  │  └─ resolver・source・truth・history の接続と、そのruntime結果・監視・cleanupを所有する
+│  │  └─ resolver・source・元の字幕データ・history の接続と、そのruntime結果・監視・cleanupを所有する
 │  ├─ text-track-resolver.ts
 │  │  └─ TextTrack を正規化し、primary / secondary 採用判定を行う
 │  ├─ native-menu-sync.ts
 │  │  └─ Apple TV+ ネイティブ字幕メニュー listener の attach / detach を扱う
-│  ├─ subtitle-block-builder.ts
-│  │  └─ primary / secondary cue から `SubtitleBlock[]` を構築する
-│  ├─ subtitle-block-candidates.ts
-│  │  └─ builder 内部の補助。検証・重複除去済みの cue から対応候補を生成する
+│  ├─ subtitle-timeline.ts
+│  │  └─ sourceの言語別cueを検証し、元時刻・本文を保持する元の字幕データを構築する
 │  └─ subtitle-history.ts
-│     └─ `SubtitleBlock[]` から current / past / future を導出する view helper
+│     └─ `SubtitleTimeline` から current / past / future を導出する view helper
 │
 ├─ panel/
 │  ├─ panel-host.ts
@@ -241,7 +245,7 @@ src/
 ### `src/content/debug-subtitle-log.ts`
 
 - 開発時だけ、lifecycle の字幕 snapshot 取得・更新購読を Console ログへ接続する
-- source・video・DOM を直接読まず、truth 構築や UI 描画を行わない
+- source・video・DOM を直接読まず、元の字幕データ 構築や UI 描画を行わない
 - 購読と重複抑制用の要約文字列だけを所有し、全 snapshot は保持しない
 - 起動の配線と dispose 保持は content coordinator の top-level bag が所有する
 - 無効時は購読も snapshot 取得も行わない。運用・検証手順は workflow と testing-checklist を参照する
@@ -309,21 +313,21 @@ UI 購読、字幕購読、renderer、host の順で cleanup を試す。
 一部の失敗後も残りを試し、失敗は呼出元へ返す。反復 dispose で再試行しない。
 host の mount / unmount は panel-host、描画領域の操作は renderer が引き続き所有する。
 
-UI store の生成・意思の更新、target 探索、readiness、restart 判断、truth 構築、
+UI store の生成・意思の更新、target 探索、readiness、restart 判断、元の字幕データ 構築、
 自動追従、layout は担当しない。字幕データ取得境界は関数として受け取り、
 source・TextTrack や lifecycle controller 本体に依存しない。
 
 ### `src/subtitles/subtitle-session.ts`
 
-字幕接続と、その接続に対応する runtime の `SubtitleBlock[]`・history の owner とする。
-source 更新時は snapshot を builder へ渡し、構築した truth から history を導出する。
-通常の再生時刻更新と seek では、保持済み truth から history だけを再計算する。
-診断 callback やログ出力レベルを、truth 構築の有効条件にしない。
-入力条件違反では該当更新の block・history を空にし、予期しない例外は区別して記録・再送出する。
-不正な再生時刻では history を空にし、有効な truth は保持して時刻正常化後に再導出する。
-source・track 一覧・video イベントの監視は既存の dispose bag が所有する。
-dispose 開始時に保持データを解放し、解除失敗時に残った旧イベントも無効化する。
-構築・導出アルゴリズムは builder・history の純関数へ委譲し、DOM は扱わない。
+字幕接続と、その接続に対応するruntimeの `SubtitleTimeline`・historyのownerとする。
+source更新時に言語別cueを一度取得し、timeline構築とhistory導出を純関数へ委譲する。
+通常の時刻更新・seekでは保持済みtimelineから3区分を再計算し、この分類のためのsource再走査は追加しない。
+元の字幕データとhistoryを同じ更新として入れ替え、更新後に既存の購読境界で通知する。別の現在字幕storeや履歴用元の字幕データは持たない。
+入力条件違反ではtimelineと全区分を空にし、古い字幕を有効な結果として残さない。
+不正な再生時刻では全区分を空にするが、有効なtimelineは保持して正常化後に再導出する。
+予期しない例外は区別して記録・再送出する。診断callbackやログレベルを字幕処理の有効条件にしない。
+既存dispose bagがsource・track一覧・videoイベントの監視を所有する。
+dispose開始時に保持データ・購読者を解放し、旧callbackを無効化する。DOMは扱わない。
 
 ### `src/subtitles/subtitle-source.ts`
 
@@ -363,35 +367,17 @@ Apple TV+ ネイティブ字幕メニューとの同期を隔離する。
 
 native menu listener の owner はこの module だけとする。
 
-### `src/subtitles/subtitle-block-builder.ts`
+### `src/subtitles/subtitle-timeline.ts`
 
-truth の正本を構築する。
-
-- primary cue 群と secondary cue 群から `SubtitleBlock[]` を構築する
-- block の時刻範囲と表示文字列を確定する
-- UI に必要な最小単位へ正規化する
-
-この module の出力が panel 表示に対する唯一の truth である。
-
-### `src/subtitles/subtitle-block-candidates.ts`
-
-builder 内部の対応候補生成を担う純関数とする。
-検証・完全重複除去済みの cue を受け取り、1対1・1対2・2対1の候補と点数を返す。
-内部型 `IndexedCue` は時刻・本文・元の入力位置を持ち、cue・track の参照を含めない。
-候補には重複除去後の先頭位置・件数と元の先頭入力位置を保持する。
-候補の採用・cue の消費・block の生成・source 制御・DOM 操作は行わない。
-builder からこの補助 module への一方向の依存とし、逆方向には依存しない。
-
+primary / secondaryのcue配列を検証し、言語別の `SubtitleTimeline` を構築する純関数とする。
+元の時刻・本文・言語内の入力順を保持し、cue・track・video・DOMの参照を元の字幕データへ持ち込まない。
+対訳候補・採点・消費・ペアブロックを作らず、本文の意味による切り分けや時刻の調整もしない。
 
 ### `src/subtitles/subtitle-history.ts`
 
-truth から表示用データを導出する view helper とする。
-
-- current block の決定
-- past / future の導出
-- panel 表示用の history snapshot 作成
-
-truth 自体は変更せず、読み取り専用の導出に徹する。
+`SubtitleTimeline` と再生時刻から、同じ字幕単位をpast / current / futureへ分類する純関数とする。
+全区分で同じ分類規則・元字幕単位を使う。currentだけ別の入力から作ったり、履歴だけ対訳ペアを作ったりしない。
+入力を変更・並べ替えず、購読・timer・DOM・スクロールを持たない。
 
 ### `src/panel/panel-host.ts`
 
@@ -412,7 +398,7 @@ panel の描画だけを扱う。
 - panel open state に応じた表示切替
 - empty / unavailable 状態の表示
 - 必要最小限の DOM 更新
-- block の非 null 本文は subtitle-text の helper で表示用へ変換し、textContent で描画する。null は変換せず空行を維持し、変換結果が空でも block は削除しない。
+- 各字幕単位の本文をsubtitle-textのhelperで表示用へ変換し、textContentで描画する。空の言語領域は空行を維持し、変換結果が空でも字幕単位を削除しない。
 - 変換失敗は当該本文だけを元の文字列の textContent 表示へ戻し、他言語・後続行・後続更新の変換試行は継続する。警告は renderer ごとに最初の失敗で一度だけ記録し、字幕本文を追加しない。fallback は変換成功と扱わない。
 
 renderer は source、raw cue、`TextTrack` を直接読まない。  
@@ -423,7 +409,7 @@ Apple TV+ 固有 selector や session cleanup 本体も持たない。
 - `toSubtitlePlainText(text, parse?)` は文字列だけを受け取り、表示用のプレーンテキストを返す。字幕取得・対応づけ・current 選択はしない。
 - 標準経路は一時 VTTCue の getCueAsHTML() で一度解析し、作業用 fragment の rt を除いて textContent を読む。画面には fragment を挿入しない。
 - ruby の親文字、元の空白・改行・句読点を保持し、読み仮名・傍点・装飾は表示へ持ち込まない。解析後の文字列を再解釈しない。
-- source / truth の本文と builder のタグ保持規則は変更しない。表示側は返された文字列を textContent で描画し、HTML として挿入しない。
+- source / 元の字幕データの元本文を変更しない。表示側は返された文字列をtextContentで描画し、HTMLとして挿入しない。
 - parse は専用の未接続 fragment を返す差替え境界。戻り値を他と共有しない。helper は参照・キャッシュ・購読を保持しない。
 - API 不在・解析・DOM 操作の失敗は例外で返す。fallback とログは接続時に呼出元が判断する。空結果は空のまま返す。
 
@@ -464,7 +450,7 @@ layout の計算、style 適用、observer / timer の管理も直接実装し�
 - layout timer の attach / detach
 - layout style の適用・解除
 
-字幕内容、字幕 truth、source、ON/OFF toggle の意味づけには依存しない。  
+字幕内容、元の字幕データ、source、ON/OFF toggle の意味づけには依存しない。
 `panelOpen` は layout 適用の入力として受け取るが、`panelOpen` 自体を更新しない。
 
 ### `src/ui/ui-state.ts`
@@ -485,7 +471,7 @@ type ExtensionUiState = {
 };
 ```
 
-`ui-state.ts` は字幕 truth、寸法、style、layout observer、layout timer、track、video を持たない。
+`ui-state.ts` は元の字幕データ、寸法、style、layout observer、layout timer、track、video を持たない。
 
 store は現在の処理 session より長く存続できる操作側 runtime として扱い、
 処理 session の start ごとに作り直さない。
@@ -504,7 +490,7 @@ state の初期化・維持条件は §16 を参照する。
 - 復元は保存値の適用までとし、新しい視聴の panel 初期表示は開始側の規則に従う。単なる復元で毎回開き直さない。
 - 保存を直列化し、古い結果は最新状態・通知に反映しない。一件の失敗で後続保存を止めない。
 - 保存中もトグル操作を受け付ける。回復操作の重複要求は抑止する。
-- DOM・video・track・字幕 truth・layout を持たず、lifecycle を直接呼ばない。UI state の有効状態を受け取る接続側が、開始停止を lifecycle へ委譲する。
+- DOM・video・track・元の字幕データ・layout を持たず、lifecycle を直接呼ばない。UI state の有効状態を受け取る接続側が、開始停止を lifecycle へ委譲する。
 
 #### 寿命と cleanup
 
@@ -542,7 +528,7 @@ module 境界で共有する型を定義する。
 - `SubtitleCueSnapshot`
 - `SubtitleSourceSnapshot`
 - `SubtitleSourceChange` / `SubtitleSourceListener`
-- `SubtitleBlock`
+- `TimedSubtitleText` / `SubtitleTimeline`
 - `SubtitleHistorySnapshot` / `SubtitleHistoryView`
 - `PlaybackTarget` / `PlaybackTargetSnapshot` / `PlaybackTargetComparison`
 - `PlaybackSessionState` / `SessionState`
@@ -609,7 +595,7 @@ ui-state.ts
 subtitle-source.ts
 text-track-resolver.ts
 native-menu-sync.ts
-subtitle-block-builder.ts
+subtitle-timeline.ts
 subtitle-history.ts
 panel-host.ts
 panel-renderer.ts
@@ -626,8 +612,8 @@ shared/*
 - `session-lifecycle.ts` → `panel-session.ts` → host / renderer / shared を panel 接続の依存方向とする。panel-session は渡された取得・購読境界と UI store を使い、lifecycle 本体へ逆依存しない
 - `panel-renderer.ts` は `subtitle-source.ts` に依存しない
 - `subtitle-source.ts` は `panel-host.ts` や `panel-renderer.ts` に依存しない
-- `subtitle-block-builder.ts` は DOM を触らない
-- `subtitle-history.ts` は truth を変更しない
+- `subtitle-timeline.ts` は DOM を触らない
+- `subtitle-history.ts` は 元の字幕データ を変更しない
 - `player-layout.ts` は字幕データを知らない
 - `ui-state.ts` は Chrome Storage、video、track、layout style を触らない
 - `settings-store.ts` は session 内 DOM を触らない
@@ -638,40 +624,30 @@ shared/*
 
 ## 9. データフロー
 
-v2 では `SubtitleBlock[]` を UI の正本とする。  
-raw cue、`TextTrack`、DOM 表示状態は truth ではない。
+`SubtitleTimeline`に、各言語の元の本文・開始時刻・終了時刻を保持する。表示ブロックと補助字幕は同じ元データから導出し、別の字幕本文の正本を作らない。
 
-データフローは次の一本に固定する。
-
-```txt
-settings-store
+```text
+設定とtrack解決          settings-store / text-track-resolver
   ↓
-text-track-resolver
+言語別cue取得            subtitle-source
   ↓
-subtitle-source
+入力検証・元字幕コピー  subtitle-timeline → SubtitleTimeline
   ↓
-subtitle-block-builder
+表示用本文の準備        標準WebVTT解析・ruby注釈の除去
   ↓
-SubtitleBlock[]
+囲み範囲の分離          会話部分 / 補助字幕
+  ↓ 会話部分
+表示ブロック構築        学習言語枠 → 結合候補 → 競合処理 → 母国語の配置
+  ↓ 再生時刻
+表示状態の導出          ブロックの過去・現在・未来と全体強調
   ↓
-subtitle-history
-  ↓
-panel-renderer
+表示接続と描画          lifecycle / panel-session → panel-renderer
 ```
 
-実行順は次の通りとする。
-
-1. `settings-store.ts` が `primaryLang` / `secondaryLang` を返す
-2. `playback-root.ts` が現在の playback target を返す
-3. `session-lifecycle.ts` が対象 video の subtitle readiness を待機する
-4. readiness 成立後、`text-track-resolver.ts` が `video.textTracks` から primary / secondary 候補を決める
-5. `subtitle-source.ts` が採用 track に bind する
-6. `subtitle-source.ts` が cue snapshot を出す
-7. `subtitle-block-builder.ts` が `SubtitleBlock[]` を構築する
-8. `subtitle-history.ts` が current / past / future を導出する
-9. `panel-renderer.ts` が panel を更新する
-
-renderer が source を直接読まず、source が panel DOM を直接触らない構成を固定する。
+これは製品の表示仕様に必要な処理の流れであり、未実装moduleのファイル名を確定する図ではない。各処理の責務は§14、具体的な公開型・関数配置の未確定事項は同節末尾を参照する。
+source更新では元データと派生結果を再構築する。時刻だけの更新では構築済みブロックの状態だけを再計算する。取得だけでは再構築せず、同じ世代の結果を公開する。
+§17・§18の字幕単位historyは既存の取得境界として区別し、表示ブロックの現在状態へ読み替えない。rendererはsource・videoを読まず、sourceはpanel DOMを操作しない。
+意味による対訳判定、別経路の現在字幕store、再生履歴を蓄積して作るブロックは導入しない。
 
 ---
 
@@ -701,29 +677,22 @@ readiness retry に独立した restart 判断を持たせない。
 
 ---
 
-## 11. `SubtitleBlock[]` と truth
+## 11. `SubtitleTimeline` と元の字幕データ
 
-`SubtitleBlock[]` は panel 表示の truth の正本である。
+`SubtitleTimeline` はprimary / secondaryの `TimedSubtitleText[]` を別々に保持する元の字幕データの正本である。
+各単位は元cueの開始時刻・終了時刻・本文を保持する。対応関係の推測や言語間のペア化はしない。
+同時に有効な複数件と、時刻の異なる同じ本文を保持する。元時刻・本文・言語内の順序を変えない。
+完全重複の除去・同時刻の本文結合も自動では行わず、入力の各要素を1単位として保持する。
+型の正本は§18、入力検証・分類の正本は§17とする。
+以下のcurrentは元字幕単位の時刻分類であり、§14の表示ブロック全体の強調とは区別する。
 
-期待する役割は次の通りとする。
-
-- primary / secondary の対応済み表示単位を持つ
-- 時刻ベースで current block を決定できる
-- panel 表示に必要な最小情報だけを持つ
-- source 側の揺れを UI に直接漏らさない
-
-共通型の定義は §18 の `SubtitleBlock` を参照する。
-
-`SubtitleBlock` は、時刻範囲と primary / secondary の表示文字列を持つ。
-識別子は共通型に含めない。
-識別子を追加する場合は、用途と必要性を明確にし、共通型と本節を同時に更新する。
-
-補足ルール:
-
-- cue オブジェクトそのものは renderer に渡さない
-- `TextTrack` 参照は renderer に渡さない
-- 表示順と表示内容は block builder 側で確定する
-- current / past / future は `SubtitleBlock[]` から導出する読み取り結果であり、別の truth を増やさない
+- 元のcue・track・video・DOMの参照、永続ID、表示用stateを含めない。
+- past / current / futureは同じ元字幕データの読み取り結果であり、別の元の字幕データではない。
+- 同じ入力要素は必ず1つの区分だけへ入る。同じ値の別入力要素は別件として保持する。
+- currentは複数件または0件でよい。代表1件を選ばず、終了後の字幕をcurrentに残さない。
+- 元字幕単位のpast/current/futureと、表示ブロックの状態を区別する。panelの表示単位と全体強調は§14に従う。
+- 各言語内は入力順を維持し、rendererで並べ替え・対訳推測・本文移動をしない。
+- 表示用本文変換は元の字幕データを変更せず、描画境界で行う。
 
 ---
 
@@ -784,7 +753,7 @@ subtitle-source.ts を bind
   ↓
 native-menu-sync.ts を attach
   ↓
-subtitle-block-builder.ts で SubtitleBlock[] を構築
+subtitle-timeline.ts で SubtitleTimeline を構築
   ↓
 subtitle-history.ts で current / past / future を導出
   ↓
@@ -797,7 +766,7 @@ panel-renderer.ts を初回描画
 |---|---|---|
 | 目的 | 現在の処理 session を終了する | controller を最終終了する |
 | 字幕接続・中継購読・readiness 待機 | 解放する | 解放する |
-| truth・history・active target / video / track 参照 | 解放する | 解放する |
+| 元の字幕データ・history・active target / video / track 参照 | 解放する | 解放する |
 | controller の状態・字幕更新購読 | 維持する | 破棄する |
 | 新しい開始・購読 | 受け付ける | 受け付けない |
 | 最終通知 | 必要なクリア・停止通知を送る | 送らない |
@@ -871,9 +840,9 @@ readiness retry も lifecycle の共通再評価経路を使う。
 `seek` は restart reason に含めない。
 seek 自体を理由に、video、track binding、session を作り直さない。
 
-再生時刻の更新や seek 後は、保持済みの `SubtitleBlock[]` と現在時刻から history を導出する。
-source の更新や未取得 cue の読込みに伴う truth の再構築とは区別し、
-seek 自体を理由に cue 本文を再取得したり、block を再構築したりしない。
+再生時刻の更新や seek 後は、保持済みの `SubtitleTimeline` と現在時刻から history を導出する。
+source の更新や未取得 cue の読込みに伴う 元の字幕データ の再構築とは区別し、
+seek自体を理由にcue本文を再取得したり、timelineを再構築したりしない。
 
 restart 時は、新 session を開始する前に旧 session が所有する resource を一度だけ dispose する。
 
@@ -887,7 +856,7 @@ restart 時は、新 session を開始する前に旧 session が所有する re
 - 処理 session に属する controls binding
 - session が所有する timer
 - session が所有する `MutationObserver` / `ResizeObserver`
-- session 内で保持した subtitle truth と history snapshot
+- session 内で保持した 元の字幕データ と history snapshot
 - session 内で保持した target、video、track への参照
 - 処理 session に属する UI state 購読
 
@@ -923,66 +892,129 @@ restart reason や video identity だけで、新しい視聴と判定しない�
 
 ---
 
-## 14. panel 設計
+## 14. 字幕の構成とpanel表示
 
-panel は右側字幕表示専用の UI とし、v2 の中心体験を担う。
+本節は製品の表示仕様を定義する。未確定事項は14.10へ集約する。§17・§18に記載した既存の字幕単位APIが、この表示仕様の実装完了を意味するわけではない。
 
-設計方針は次の通りとする。
+### 14.1 入力と出力
 
-- panel の DOM 土台は `panel-host.ts` が所有する
-- 表示内容の描画は `panel-renderer.ts` が所有する
-- panel の開閉状態は `ui-state.ts` が持つ
-- panel の幅配分と layout state は `player-layout.ts` が持つ
-- panel 内で source 取得や track 解決は行わない
+入力は、学習言語・母国語それぞれの元の字幕データと再生時刻である。元字幕の時刻・本文・言語内順序を変更しない。入力検証は§17のsubtitle-timelineに従う。
+出力は、会話の表示ブロック、そのブロックの過去・現在・未来と全体強調、会話から分離した補助字幕とする。表示ブロックは元データからの導出結果であり、意味上の対訳ペアではない。
 
-### 表示の仕様
+### 14.2 表示用本文と補助字幕
 
-block の本文・時間範囲・並びは §17 の `subtitle-block-builder.ts`、
-current / past / future の導出は同節の `subtitle-history.ts` を正本とする。
-panel 側で block の並べ替えや current の再選択を行わない。
+- 標準WebVTT解析とruby注釈除去で表示用本文を準備する。タグ付き原文は元データに保持する。
+- `〝`から対応する`〟`までの囲まれた範囲を補助字幕として会話表示から分ける。囲み記号も保持する。
+- `vertical`・`line`・`position`などの配置情報を分離条件にしない。囲みのない字幕を、縦書きだけを理由に除外しない。
+- 補助字幕は会話ブロックの構成、言語間のまとめ、ブロック開始・終了の計算に使わない。元データから削除しない。
+- 表示部分に分ける場合も元字幕の開始・終了時刻を引き継ぐ。文字位置から時刻を推測しない。
+- 原文の空白・改行・順序を保持し、`︱`の文字置換や意味による画面内文字の分類は行わない。HTMLとして画面へ挿入しない。
+- 部分囲み、複数囲み、閉じ忘れ、入れ子、変換失敗、適用言語の詳細は14.10の未確定事項とする。
 
-| 項目 | 仕様 |
+### 14.3 学習言語枠
+
+開始・終了時刻が両方完全一致する学習言語字幕を、元の入力順で1つの枠に入れる。2断片・3断片・多数件という件数だけでは分割しない。
+これは表示上の集約であり、元データの本文結合や重複除去ではない。時刻の異なる枠の結合は14.4で処理する。
+
+### 14.4 母国語字幕による結合と競合処理
+
+1. 補助字幕を分離した後の会話字幕を使う。
+2. 同じ1件の母国語字幕が、入力順で連続する複数の学習言語枠すべてと正の時間だけ重なる場合、その枠の集合を結合候補とする。終了と開始が接するだけでは重なりとしない。
+3. 候補は、根拠となる母国語字幕の開始時刻が早い順に処理する。開始時刻が同じ場合は、その母国語字幕の元の入力順を優先する。
+4. 競合しない候補を確定し、根拠となった母国語字幕を同じブロックへ入れる。確定済みの学習言語枠を含む競合候補は採用しない。
+5. 別の母国語字幕を介して、確定ブロックをさらに拡張しない。同じ字幕を複数のブロックへ配置しない。
+6. 枠数だけによる分割、意味による対訳判定、採点は行わない。枠数・時間幅の固定上限は設定されていない。極端に長い候補の扱いは14.10で確定する。
+
+候補の採用順序は入力データだけで決め、再生方向・再生済みかどうか・イベント到着順に依存させない。
+
+### 14.5 結合に使わなかった母国語字幕
+
+結合の根拠として配置されていない母国語字幕は、結合確定後の枠との重なり時間が最大の枠へ1回だけ配置する。同点なら開始時刻の早い枠を選ぶ。
+重なる枠がなければ母国語だけのブロックとして残す。本文を捨てたり、対応を合わせるために時刻を切ったりしない。
+母国語の配置でブロックの時間範囲が延びても、学習言語枠の結合をやり直さない。
+比較に使う区間、配置済み母国語の影響、重なりと開始がともに同じ場合の最終優先順位は14.10で確定する。
+
+### 14.6 ブロックの時間範囲と全体強調
+
+ブロック開始は含まれる会話字幕の開始の最小値、ブロック終了は終了の最大値とする。補助字幕は含めず、空ブロックは生成しない。
+
+| 状態 | 条件 | 表示 |
+|---|---|---|
+| 未来 | `currentTime < block.startTime` | 通常表示 |
+| 現在 | `block.startTime <= currentTime && currentTime < block.endTime` | 学習言語・母国語を含む枠全体を強調 |
+| 過去 | `block.endTime <= currentTime` | 通常表示で保持 |
+
+強調は個別字幕の有効状態で切り替えない。内部の空白、母国語の切替、学習言語の先行終了があっても、ブロックの範囲内なら全体強調を継続する。元字幕の時刻は変更せず、判定時に丸めない。
+
+各ブロックは学習言語を上、母国語を下に表示し、各言語の元の順序・改行・空白を維持する。存在しない字幕を補完したり、本文を他言語側へ移したりしない。
+過去・現在・未来を通じて同じ枠の構成を保持する。構成は取得済み字幕から作り、再生履歴を蓄積して作らない。同じ入力と時刻なら前後seekでも同じ結果にする。
+ブロックの時間範囲同士が重なる場合の強調・選択と、一覧順・区分見出しは14.10の未確定事項とする。
+
+### 14.7 具体例：同時刻の英語2件と日本語3件
+
+| 言語 | 開始〜終了（秒、表示上の概数） | 本文 |
+|---|---|---|
+| 学習言語 | 48.098〜51.934 | - Hey, kiddos! |
+| 学習言語 | 48.098〜51.934 | - Oh, my gosh, a puppy. |
+| 母国語 | 48.131〜49.131 | 子供たち！ |
+| 母国語 | 49.341〜50.717 | あれは… |
+| 母国語 | 50.842〜52.010 | 子犬さん！ |
+
+5件を1ブロックに収め、`48.09800833333331`秒以上、`52.01037777777778`秒未満で全体を強調する。各日本語の切替間と英語終了後も、枠の強調を途切れさせない。
+
+### 14.8 具体例：結合候補の競合
+
+入力を学習言語A:[10,12)、B:[12,14)、C:[14,16)、母国語①:[10,14)、②:[12,16)とする。
+
+| 処理 | 結果 |
 |---|---|
-| 言語の上下 | 学習言語を上、母国語を下に表示する |
-| 本文 | block 内の本文と改行を維持して表示する |
-| 片言語 block | 存在する側に本文を表示し、欠けている言語側も空行を1行確保する |
-| 言語領域 | 片言語でも、もう片方の言語領域へ本文を移さない |
-| 表示順 | history の past、current、future を元の block 順に表示する。current が null の場合も future を表示対象とする |
-| current | 再生位置を代表する1 block として強調する |
-| 非選択の block | current でないことや終了時刻を過ぎたことを理由に、表示対象から取り除かない |
-| 表示範囲 | 表示対象として残ることと、スクロール領域内で常に見えることは区別する |
-| 未取得の字幕 | truth にまだ存在しない字幕を補完して表示しない |
-| 補助表示 | secondary unavailable などの補助情報を必要に応じて表示する |
-| 非表示 | extension OFF または panel close 時は非表示にする |
+| 母国語①の候補 | 開始が早いためA・Bの結合を確定し、①を配置する |
+| 母国語②の候補 | Bが結合済みなのでB・Cの結合は行わない |
+| 母国語②の配置 | A・B側とC側の重なりが各2秒。同点では開始の早いA・B側へ入れる |
+| 最終結果 | A・B・①・②のブロック:[10,16)、Cのブロック:[14,16) |
 
-### 自動スクロールの仕様
+```text
+学習言語  A:[10,12) → B:[12,14) → C:[14,16)
+母国語    ①:[10,14)   ②:[12,16)
+                     ↓
+枠1 [ A + B + ① + ② ]   枠2 [ C ]
+      [10,16)                  [14,16)
+```
 
-自動追従は、current を表示範囲に案内するための処理とする。
-current の選択規則や block の順序を変更せず、全行を順番に強調するための処理は加えない。
+入力字幕の重複配置はないが、ブロックの時間範囲は重なる。この違いを区別し、重なりを消すために元時刻を補正しない。
 
-| 状況 | 仕様 |
+### 14.9 処理境界・公開・cleanup
+
+| 処理 | 責務 |
 |---|---|
-| 表示範囲内の進行 | current 全体が表示範囲に収まる間は、強調だけを進め、自動スクロールしない |
-| 下端で収まらなくなる | 新しい current 全体が表示範囲に収まらなくなったら、その block の上端を表示範囲の上端へ合わせる |
-| スクロールの動き | 初期版はアニメーションを付けず、位置を切り替える |
-| 手動スクロール | ユーザーのスクロール操作で自動追従を停止する。current の計算・強調は継続する |
-| 操作の判定 | 単なる scroll イベントだけで追従停止を判定しない。自動スクロール自身で追従停止しないよう区別する |
-| 現在位置に戻る | 「現在位置に戻る」操作で current を上端へ表示し、自動追従を再開する。current がなければ先頭へ移動する |
-| 追従中の seek | seek 先の current を上端へ表示する。current がなければ先頭へ移動する |
-| 追従停止中の seek | 停止を維持する。強調を更新し、閲覧位置を勝手に移動しない |
-| panel の再表示 | current を上端へ表示して自動追従を再開する。current がなければ先頭へ移動する |
-| source 更新後・追従中 | 再計算された history に通常の追従規則を適用する。current がなくなった場合は先頭へ移動する |
-| source 更新後・追従停止中 | 自動スクロールせず、閲覧位置を可能な範囲で維持する |
-| 表示範囲より高い block | 上端を合わせるだけとし、収まらないことを理由に繰り返しスクロールしない |
-| 末尾で上端へ揃えられない場合 | 最大スクロール位置まで移動する。上端合わせ用の余白を追加しない |
+| subtitle-source / subtitle-timeline | trackからの取得、入力検証、言語別の元字幕コピー。囲みを理由に入力を捨てない |
+| 表示用本文の準備 | 標準解析・ruby注釈除去。作業用DOM断片は呼出し内に閉じ込める |
+| 囲み分離 | 会話部分と補助部分を導出し、元字幕の言語・入力位置・本文範囲・元時刻との対応を保持する |
+| ブロック構築 | 会話部分から学習言語枠、候補、競合処理、母国語配置、開始・終了を導出する |
+| 状態導出 | 構築済みブロックと有限の非負再生時刻から状態・全体強調を求める |
+| subtitle-session | 同じ元データ世代の派生結果を所有し、完了後にまとめて公開・通知する |
+| lifecycle / panel-session | 開始停止、取得・通知の中継、既存UI stateとの接続。導出アルゴリズムを重複しない |
+| panel-renderer / panel-host | 渡された結果のtextContent描画と、所有DOMの生成・除去。source・video・時刻を直接読まない |
 
-source 更新後の表示は、外部から渡された truth / history に従う。
-panel 自身が source を購読したり、source や TextTrack を直接読んだりしない。
-自動追従の状態は保存設定ではなく runtime の表示状態として扱い、Chrome Storage には保存しない。
-追従用のイベントや購読を追加する際は owner と cleanup を明確にし、
-session 終了・表示の破棄後に旧処理を残さない。
+source更新時に元データと構成を再導出する。時刻更新では既存ブロックの状態だけを求め、snapshot取得時にsource再走査・再計算を行わない。
+表示断片の入力位置は同じ世代内だけで有効とし、永続IDとして使わない。取得結果の変更を内部へ伝えず、元データと別世代の表示を混在させない。
+元データ構築失敗は元データと派生結果をクリアする。表示導出失敗は有効な元データを保持し、古い表示結果を残さない。不正時刻では構成を保持して現在状態・強調をクリアし、正常化後に再判定する。予期しない例外を分類規則の変更で隠さない。
+純粋な導出処理はlistener・timer・observerを追加しない。session終了時は派生結果を解放し、旧世代・旧購読からの再公開を遮断する。
+panel closeと拡張OFFの違い、資源の唯一の所有者、stopとdisposeの違いは§7・§12・§15・§19に従う。
 
-panel は truth の読み取り結果を表示するだけであり、source 制御の入口にしない。
+### 14.10 未確定事項と実装の制約
+
+| 項目 | 確定が必要な内容 |
+|---|---|
+| 長い結合候補 | 元字幕を切らず、極端に長い候補をどう扱うか |
+| 最大重なり配置 | 比較区間、配置済み母国語の影響、重なりと開始が同じ場合の最終順序 |
+| 囲みの例外 | 部分囲み・複数囲み・不完全な囲み・入れ子・変換失敗・適用言語 |
+| 表示の詳細 | 片言語の空欄、補助字幕の位置・履歴・強調、ブロック重なり、一覧順・見出し |
+| 自動追従 | 案内対象となるブロック・領域、現在ブロックがない場合の位置 |
+| 公開境界 | 表示結果の型、関数とmoduleの配置、既存snapshotからの切替方法 |
+
+未確定条件を仮の閾値・代表選択・推測で補って汎用構築を開始しない。具体的な公開型と配置は§17・§18にそろえてから実装する。新しいファイル名候補を実在するmoduleとして記載しない。
+自動追従では、手動閲覧中の位置維持、自動スクロールとユーザー操作の区別、長い領域での反復移動防止、末尾余白を追加しないこと、状態を保存しないことを維持する。具体的な案内基準は未確定であり、自動追従の実装・実機確認済みとは扱わない。
 
 ---
 
@@ -1055,7 +1087,7 @@ Chrome Storage に保存する。
 - 現在の playback target
 - 現在の `video`
 - 現在採用されている primary / secondary track
-- 現在の `SubtitleBlock[]`
+- 現在の `SubtitleTimeline`
 - current / past / future の計算結果
 - panel open state
 - extension enabled state
@@ -1076,13 +1108,13 @@ store 自体に target・video・track・字幕データを保持させない。
 
 ### UI state と layout state
 
-runtime state のうち、字幕 truth、UI state、layout state は同じ store や同じ責務に混ぜない。
+runtime state のうち、元の字幕データ、UI state、layout state は同じ store や同じ責務に混ぜない。
 
 | 区分 | 正本 | 保持するもの | 持たないもの |
 | --- | --- | --- | --- |
-| subtitle truth | `SubtitleBlock[]` | primary / secondary 字幕、時刻範囲、表示単位 | panel DOM、layout style、toggle state |
-| UI state | `ui-state.ts` | `extensionEnabled`、`panelOpen` | 幅、座標、style、observer、timer、字幕 block |
-| layout state | `player-layout.ts` | `PlayerLayoutState`、計算済み寸法、適用済み style、layout observer / timer | `extensionEnabled` の意味、`panelOpen` の更新、字幕 truth |
+| 元の字幕データ | `SubtitleTimeline` | 言語別の元時刻・本文 | panel DOM、layout style、toggle state |
+| UI state | `ui-state.ts` | `extensionEnabled`、`panelOpen` | 幅、座標、style、observer、timer、字幕単位 |
+| layout state | `player-layout.ts` | `PlayerLayoutState`、計算済み寸法、適用済み style、layout observer / timer | `extensionEnabled` の意味、`panelOpen` の更新、元の字幕データ |
 
 `panelOpen` は layout を適用するための入力である。  
 ただし、layout の計算・style 適用・observer 管理・timer 管理は `player-layout.ts` だけが行う。
@@ -1094,8 +1126,10 @@ runtime state のうち、字幕 truth、UI state、layout state は同じ store
 
 ## 17. module 間の API 境界
 
+字幕単位の`SubtitleHistorySnapshot`とそれを受け取るsession・rendererの記述は、既存の接続契約を示す。§14の表示ブロック・補助字幕の公開型は未確定であり、同じ型を別の意味へ読み替えない。型を変更するときは本節・§18・利用先・テストを同じ変更でそろえる。
+
 初期版の API は必要以上に抽象化しない。
-ただし、DOM・track・truth・UI state・layout state・cleanup の境界は崩さない。
+ただし、DOM・track・元の字幕データ・UI state・layout state・cleanup の境界は崩さない。
 
 - 複数 module で共有する型の定義は §18 に置く。
 - 各 API 節には公開操作と、その module 固有の入力・出力境界を書く。
@@ -1288,23 +1322,25 @@ function createSubtitleSource(
 
 ### `subtitle-session.ts`
 
-`createSubtitleSession(options)` は `dispose()`・`getSnapshot()`・`subscribe(listener)` を提供する。
-取得結果は `{ blocks: SubtitleBlock[], history: SubtitleHistorySnapshot }` とし、
-cue・track・video の参照を含めない。配列と block をコピーし、取得結果の変更を内部へ伝えない。
-同じ取得結果内では history の各 block と blocks の対応する要素を共有する。
-取得時に source の再読込みや再構築は行わず、最後の更新結果を返す。
-dispose 後の取得結果は、空の blocks と current:null・past/future が空の history とする。
-診断専用の `onObservation` は、このデータ取得境界とは分離する。
+`createSubtitleSession(options)` はdispose・getSnapshot・subscribeを提供する。
+取得結果は `{ timeline: SubtitleTimeline, history: SubtitleHistorySnapshot }` とし、型は§18を参照する。
+現在字幕はhistory.currentだけで表し、別のactiveフィールドや履歴用ブロック配列は追加しない。
+取得時にsource再読込み・元の字幕データ再構築・時刻再計算は行わず、最後の更新結果を返す。
+配列と字幕単位をコピーし、取得結果の変更を内部へ伝えない。同じ取得結果内ではtimelineとhistoryの対応要素を共有する。
+接続中の空結果は空の言語別timelineと全区分の空配列、接続なしはlifecycle側のnullで区別する。
+dispose後の取得結果は接続中の空結果と同じ形とする。
 
-`subscribe(listener: () => void): DisposeFn` は、データ更新後に引数なしで通知する。
-登録時の即時通知はせず、初期データは `getSnapshot()` で取得する。
-成功した再構築・時刻更新と、失敗による保持結果のクリアを通知対象とする。
-同じ結果になる更新も通知でき、購読だけでは snapshot コピーや source 再読込みを行わない。
-解除は登録単位で冪等に行い、通知中に解除された登録は呼ばず、新しい登録は次の更新から対象とする。
-通知中の再入で更新世代が変わった場合は、旧更新の後続通知を打ち切る。
-購読者の例外は記録して後続通知を継続し、入力条件違反とは混同しない。
-dispose 開始時に購読者を解放し、最終通知は行わない。dispose 後の新規購読は無効とする。
+source更新では検証・timeline構築・分類を完了してから同じ更新として公開する。
+入力条件違反・読取失敗では古いtimelineと全区分をクリアし、回復後に再構築する。
+不正な再生時刻ではtimelineを保持し、全区分を空にして、時刻正常化後に再導出する。
+予期しない例外は区別して記録・再送出する。診断callbackはデータ境界と分離する。
 
+`subscribe(listener: () => void): DisposeFn` は更新後に引数なしで通知する。
+登録時の即時通知はせず、初期値はgetSnapshotで取得する。購読だけではコピーやsource再読込みをしない。
+再構築・時刻更新・失敗によるクリアを通知し、同一結果の更新も通知できる。
+解除は登録単位で冪等とし、通知中に解除された登録は呼ばず、新規登録は次の更新から対象とする。
+再入で世代が変われば旧通知の後続を打ち切り、購読者の例外は記録して後続へ進む。
+dispose開始時に保持データと購読者を解放し、最終通知を行わず、新規購読を無効にする。
 
 ### `native-menu-sync.ts`
 
@@ -1319,331 +1355,63 @@ function attachNativeMenuSync(args: {
 }): NativeMenuSync;
 ```
 
-### `subtitle-block-builder.ts`
-
-primary / secondary の cue 配列から `SubtitleBlock[]` を構築する純関数とする。
-共通型は §18、truth の原則は §11 を参照する。
+### `subtitle-timeline.ts`
 
 ```ts
-function buildSubtitleBlocks(
+function buildSubtitleTimeline(
   primaryCues: readonly SubtitleCueSnapshot[],
   secondaryCues: readonly SubtitleCueSnapshot[],
-): SubtitleBlock[];
+): SubtitleTimeline;
 ```
 
-#### 入力と責務境界
-
-- 呼び出し側が `SubtitleSourceSnapshot` から取り出した両言語の cue 配列を渡す
-- source 全体、source のインスタンス、video、現在の再生時刻は受け取らない
-- `SubtitleCueSnapshot` は cue 1 件分の型として使う
-- cue の `startTime`、`endTime`、`text` を読み、配列の引数で primary / secondary の役割を区別する
-- cue の track 管理情報や実 `TextTrack` の状態は読まない
-- 入力配列と各 cue を変更せず、新しい配列と block オブジェクトを返す
-- 戻り値には cue や track の参照を含めず、現行の `SubtitleBlock` の時刻・本文だけを持たせる
-- id / key、内部状態、キャッシュ、listener、timer、observer は追加しない
-- renderer や panel の都合、DOM 操作、source の取得・購読・cleanup は持ち込まない
-
-#### 候補生成の内部境界
-
-`subtitle-block-candidates.ts` の `generateSubtitleCandidates(primary, secondary)` は、
-開始時刻順で入力検証・完全重複除去・同時刻正規化済みの `readonly NormalizedSubtitleUnit[]` を受け取る。
-以下の対応候補・結合条件・点数規則に従って新しい候補配列を返す。
-入力の検証・完全重複除去・同時刻正規化は builder、系列全体での採用判断と block 出力も builder の責務とする。
-内部型と候補配列は source・renderer との公開境界や新たな truth にしない。
-
-builder の内部補助関数 `selectSubtitleCandidates(candidates)` は、
-候補生成済みの `readonly SubtitleMatchCandidate[]` から採用候補を入力順に返す。
-採用判断には以下の全体評価・同点規則を適用し、元の配列と候補を変更しない。
-戻り値は新しい配列と候補オブジェクトとし、本文結合や block 出力は行わない。
-この関数の export は内部処理の単体検証用であり、source・renderer からの利用境界にはしない。
-
-
-#### 基本的な入出力例
-
-以下は、有効な cue に対する基本的な入出力の例である。
-入力条件と複数 cue の対応づけは、後述の規則に従う。
-
-| 入力 | 戻り値 |
-|---|---|
-| primary / secondary とも空 | 空の `SubtitleBlock[]` |
-| primary のみ1件、secondary は空 | primary の時刻範囲と本文を持ち、`secondaryText: null` の1 block |
-| secondary のみ1件、primary は空 | secondary の時刻範囲と本文を持ち、`primaryText: null` の1 block |
-| primary / secondary が各1件で、開始・終了時刻がそれぞれ完全に一致 | 共通の時刻範囲と両言語の本文を持つ1 block |
-
-#### 対応づけと block 構築
-
-primary は学習言語、secondary は母国語を表す。
-重なり率60%、空白率10%、候補点数の評価方式は暫定採用とし、
-実際の字幕による検証結果に応じて見直せるものとする。
-
-##### 入力条件と検証
-
-| 項目 | 仕様 |
-|---|---|
-| 入力 | primary / secondary の cue 配列を受け取る |
-| 空配列 | どちらの言語も空配列を許可する |
-| 時刻 | 各 cue は有限の時刻で `0 <= startTime < endTime` を満たす |
-| 入力順 | 各配列は startTime の非減少順とする。同じ開始時刻を許可する |
-| 本文 | 空文字列・空白だけの文字列を許可しない |
-| 不正入力 | 時刻・順序・本文の条件違反は `RangeError` で拒否する |
-| 補正 | 不正な cue の除外、黙った並べ替え、時刻の補正を行わない |
-| 本文の保持 | 空白だけかどうかの検証と、出力本文の加工を区別する。有効な本文は trim しない |
-| 入力の不変性 | 入力配列と各 cue を変更しない |
-
-生 cue 全件の入力条件を検証したうえで、完全重複除去、同時刻正規化、対応候補の比較、block 出力の順に処理する。
-正規化によって、不正な入力の除外や補正を行わない。
-入力順は非同期処理の完了順ではなく、各言語の入力配列内の順序を指す。
-
-##### 完全重複の除去
-
-| 項目 | 仕様 |
-|---|---|
-| 除去する条件 | 同じ言語内で startTime・endTime・text がすべて一致する cue |
-| 残すもの | 元の入力順で最初の1件 |
-| 実施時点 | 同時刻正規化の前 |
-| 順序 | 除去後も残った cue の入力順を維持する |
-| 本文比較 | 空白・改行差を正規化して同一視しない |
-| 除去しないもの | 異なる時刻の同一本文、異なる本文、異なる言語の同一本文 |
-
-完全重複の判定は生 cue に対して行う。同時刻正規化後には重複除去を再実行しない。
-結合後に同じ言葉が繰り返されても、それだけを理由に本文を削除しない。
-候補の評価に使う件数は、後述の正規化単位の数とする。
-
-##### 連続した同時刻 cue の正規化
-
-| 項目 | 仕様 |
-|---|---|
-| 対象 | primary / secondary を別々に処理する |
-| 条件 | 完全重複除去後の配列で連続し、startTime と endTime がそれぞれ完全一致する cue |
-| 件数 | 条件が続く最大の連続区間を、件数上限なしで1単位にする。1件ならそのまま1単位とする |
-| 本文 | 入力順に改行文字 `\n` で連結し、各 cue の空白・改行・タグを保持する |
-| 時刻 | 区間内で共通の startTime / endTime をそのまま使う |
-| 区切り | 開始または終了が異なる cue に達したら区切る。離れた同時刻 cue を集めず、並べ替えない |
-| 精度 | 許容誤差、時刻の丸め・補正を導入しない |
-| 元の位置 | 単位内の先頭 cue の元の inputIndex を保持する |
-| 独立性 | 入力を変更せず、新しい内部データを作る。cue・track の参照や資源は保持しない |
-| 他言語がない場合 | 対応相手の有無にかかわらず正規化する |
-
-この処理後の内部表現を「正規化単位」と呼ぶ。内部型は `NormalizedSubtitleUnit` とし、
-startTime・endTime・連結済み text・先頭の inputIndex を持つ。
-公開の `SubtitleCueSnapshot` と `SubtitleBlock` は変更しない。
-
-連続性は、完全重複除去後の配列を基準に判定する。
-たとえば、除去によって同時刻の cue が隣接した場合も正規化の対象となる。
-
-- A(10,12)、B(10,13)、C(10,12) は A → B → C のままとする。
-- A(10,12)、B(10,12)、C(10,13) は AB → C とする。
-- 同じ開始・終了時刻の cue が何件連続していても、同じ規則で1単位にする。
-
-以降の対応候補、隣接、件数、消費、未対応出力は、
-正規化単位を基準とし、生 cue の断片数を使わない。
-
-
-##### 対応候補と結合条件
-
-| 項目 | 仕様 |
-|---|---|
-| 対応の組み合わせ | 正規化単位で1対1・1対2・2対1 |
-| 同言語の2単位 | 正規化後の配列で隣接する2単位だけを対象とする |
-| 非重複の隣接2単位 | 空白率10%以下なら結合候補とする |
-| 重なる隣接2単位 | 結合候補として比較する |
-| 結合の扱い | 正規化後の2単位の結合は候補として比較し、強制しない。同時刻正規化とは区別する |
-| 結合上限 | 同じ言語の3単位以上への連鎖結合は行わない。各単位に含まれる生 cue 数は制限しない |
-| 未対応 | 対応に採用されなければ、primary / secondary とも正規化単位ごとに片言語 block として残す |
-| 再利用 | 同じ正規化単位を複数の対応に使わない |
-| 順序 | 両言語の正規化単位の入力順を維持し、対応を交差させない |
-
-2単位を結合候補として評価するときの時間範囲は、
-対象単位の最小開始時刻から最大終了時刻までとする。
-この範囲には、2単位の間にある空白も含める。
-
-##### 重なり率と空白率
-
-primary 側の候補範囲を `[pStart, pEnd)`、
-secondary 側の候補範囲を `[sStart, sEnd)` とする。
-各候補範囲は1単位、または結合候補の2単位から求める。
-
-```text
-overlap = max(0, min(pEnd, sEnd) - max(pStart, sStart))
-span = max(pEnd, sEnd) - min(pStart, sStart)
-overlapRatio = overlap / span
-```
-
-`overlapRatio >= 0.60` の組み合わせを対応候補とする。
-境界だけが接する場合は overlap が0なので、対応候補としない。
-
-同じ言語の開始時刻順の隣接2単位を、
-`[aStart, aEnd)`、`[bStart, bEnd)` とする。
-
-```text
-gap = max(0, bStart - aEnd)
-span = max(aEnd, bEnd) - aStart
-gapRatio = gap / span
-```
-
-重なっていない2単位では、`gapRatio <= 0.10` を結合候補条件とする。
-空白が0の隣接2単位も含む。
-重なる2単位は、前項の重なりを持つ隣接2単位の規則で扱う。
-
-##### 候補点数と全体評価
-
-```text
-candidateScore = (overlapRatio - 0.60) * matchedUnitCount
-```
-
-| 組み合わせ | matchedUnitCount |
-|---|---:|
-| 1対1 | 2 |
-| 1対2 | 3 |
-| 2対1 | 3 |
-
-matchedUnitCount は採用する正規化単位の総数とし、元の生 cue 数による重みは付けない。
-同時刻の英語5 cueを1単位にしたものと日本語1単位の対応は、1対1・2単位として評価する。
-同時刻正規化は確定した前処理であり、1対2・2対1の結合回数には数えない。
-候補の primaryCount / secondaryCount は正規化単位数、offset は正規化後の配列位置とする。
-隣接判定、採用列の交差・再利用防止、slice、消費済み管理、ループの前進には、この位置と単位数を使う。
-元の inputIndex を正規化後の配列添字として使用しない。
-
-再利用なし・順序維持を満たす対応の組み合わせの中から、
-candidateScore の合計が最大になるものを選ぶ。
-
-| 項目 | 仕様 |
-|---|---|
-| 評価範囲 | 各候補を局所的に即決せず、系列全体で評価する |
-| 未対応単位 | 点数は0。未対応への減点は付けない |
-| 候補条件 | 重なり率60%以上は候補になれる条件であり、採用を保証しない |
-| 結合の優先度 | 1対1の優先は合計点が同じ場合の規則であり、高得点の結合を一律に排除しない |
-
-##### 同点時の優先順位
-
-系列全体の結果を、次の順で比較する。
-
-| 優先順位 | 比較するもの | 選択 |
-|---|---|---|
-| 1 | 候補点数の合計 | 大きい方 |
-| 2 | 1対2・2対1の結合回数 | 少ない方 |
-| 3 | 対応づけされた正規化単位数 | 多い方 |
-| 4 | 対応リスト | 下記の辞書順で小さい方 |
-
-各対応を次の組で表し、対応を入力順に並べたリストを比較する。
-
-```text
-(
-  primary の先頭入力位置,
-  secondary の先頭入力位置,
-  primary の正規化単位数,
-  secondary の正規化単位数
-)
-```
-
-先頭から比較し、最初に異なる数値が小さい方を選ぶ。
-入力位置には元の入力配列の位置を使い、
-完全重複除去・同時刻正規化後も、各単位の先頭 cue の元の入力位置を保持して比較する。
-この位置は builder 内部の比較にだけ使用し、block に id / key として出力しない。
-
-重なり率60%ちょうどの候補点数は0となる。
-
-- 60%の1対1と未対応が同点なら、結合回数も同じなので対応単位数により1対1を選ぶ。
-- 60%の1対2・2対1は、ほかに利点がなければ結合回数の少ない未対応を選ぶ。
-
-##### block の本文・欠損・時間範囲
-
-| 項目 | 仕様 |
-|---|---|
-| 本文の役割 | primaryText は学習言語、secondaryText は母国語 |
-| 本文結合 | 単位内の本文を保持し、各言語の採用単位を入力順に改行文字 `\n` でつなぐ |
-| 元の本文 | 各 cue の空白・改行を保持する |
-| 欠損 | 存在しない言語側の本文を `null` とする |
-| 空の block | primaryText / secondaryText が両方 `null` の block は生成しない |
-| primary がある block の時刻 | primaryの採用単位の最小開始時刻と最大終了時刻 |
-| secondary のみの block の時刻 | 未対応secondary単位の開始時刻と終了時刻 |
-| 各言語の独立した時刻 | block に別々の時間範囲として保持しない |
-| 戻り値 | 新しい配列と block オブジェクトを返す。cue・track の参照を含めない |
-
-`primaryText` / `secondaryText` は対称な `string | null` とし、
-欠けている言語の本文を `null` で表す。共通型の定義は §18 を参照する。
-
-##### block の出力順
-
-| 項目 | 仕様 |
-|---|---|
-| 基本順 | primaryの正規化単位の入力順を軸にする |
-| primary を含む block | primaryの正規化単位の入力順を維持する |
-| primary 2単位をまとめた block | 先頭primary単位の位置に置く |
-| secondary のみの block | secondary の開始時刻に従い、primary を軸にした並びへ挿入する |
-| 同じ開始時刻 | primary を含む block を先、secondary のみを後に置く |
-| secondary のみの block 同士 | secondaryの正規化単位の入力順を維持する |
-| 並べ替えに使わないもの | 終了時刻、二言語か片言語かという種類の優先順位 |
-
-primary を含む block の開始時刻には primary 側の開始時刻を使う。
-secondary のみの block は、開始時刻がそれより大きい
-最初の primary block の直前に挿入する。
-該当する primary block がなければ末尾に置く。
-
-primary が空の場合は、secondaryの正規化単位の入力順で片言語 block を返す。
-両言語が空の場合は、空の配列を返す。
-
-##### 呼び出し側の例外処理
-
-入力条件違反の `RangeError` は、再生経路への接続時に呼び出し側で処理し、
-該当更新の block / history を空にする。再生自体は停止しない。
-古い字幕を、新しい更新に対する有効な結果として残さない。
-
-予期しない例外まで一括して握りつぶさない。
-例外処理や source の制御を builder 自身には持ち込まない。
+- sourceのインスタンス・video・現在時刻ではなく、言語別cue配列を受け取る純関数とする。
+- 両言語とも空配列を許可し、存在しない言語は空配列で表す。
+- 全入力は有限の時刻、`0 <= startTime < endTime`、空白だけではない本文、言語ごとの開始時刻の非減少順を満たす。同じ開始時刻を許可する。
+- 条件違反はRangeErrorで拒否し、黙った除外・並べ替え・時刻補正を行わない。
+- startTime・endTime・textだけをコピーする。元の本文・改行・空白・タグと各言語内の順序を保持する。
+- 元cueやtrackの参照・管理情報を出力に含めず、入力を変更・保持しない。
+- 各入力要素を1単位として保持し、重複除去・同時刻結合・訳文分割・意味分類・ペア化・採点を行わない。
+- 縦書きであることだけを理由に本文を除外しない。
+- 購読・timer・observer・キャッシュ・DOMは扱わず、失敗時の公開結果のクリアはsessionが所有する。
 
 ### `subtitle-history.ts`
 
-`SubtitleBlock[]` と現在の再生時刻から、current / past / future を導出する純関数とする。
-共通型は §18、block の時間範囲と出力順は前項の builder の仕様を参照する。
-
 ```ts
-// 共通型は §18 を参照する。
 function deriveSubtitleHistory(
-  blocks: readonly SubtitleBlock[],
+  timeline: SubtitleTimeline,
   currentTime: number,
 ): SubtitleHistorySnapshot;
 ```
 
-#### 再生位置からの導出仕様
+保持済みの同じtimelineを、各言語で独立に次の3区分へ分類する純関数とする。
 
-| 項目 | 仕様 |
+| 区分 | 条件 |
 |---|---|
-| 入力 | builder が構築した表示順の block 配列と現在の再生時刻 |
-| 時刻条件 | currentTime は有限の非負数。不正な値は `RangeError` で拒否する |
-| current の意味 | panel 上で再生位置を代表する1 block。発話中であることは保証しない |
-| 選択条件 | `startTime <= currentTime` を満たす block のうち、startTime が最も大きいもの |
-| 同じ開始時刻 | 表示順で最初の block を current にする |
-| 時刻の基準 | block の startTime を使う。primary があれば primary 側、なければ secondary 側の開始時刻は builder が設定する |
-| 終了時刻 | endTime を current の切り替え条件に使わない |
-| 全行の強調 | 全 block が必ず一度 current になることは要求しない |
-| past | current より前の block を表示順で返す |
-| future | current より後の block を表示順で返す |
-| 先頭より前 | current は null、past は空配列、全 block が future |
-| 空配列 | current は null、past / future は空配列 |
-| 空白区間・末尾 | 次の開始時刻に到達するまで、開始時刻方式で最後に選ばれる current を維持する |
-| seek | seek 先の時刻から同じ規則で再計算する。前回の結果や再生方向に依存しない |
-| 入力の保持 | 入力配列・block を変更せず、並べ替えない |
-| 戻り値の型 | 既存の SubtitleHistorySnapshot を使う。SubtitleHistoryView は既存の別名として維持する |
-| 責務境界 | source・TextTrack・video・DOMを直接読まず、購読・timer・スクロールを持たない |
+| past | `endTime <= currentTime` |
+| current | `startTime <= currentTime && currentTime < endTime` |
+| future | `currentTime < startTime` |
 
-past / future は「終了済み / 未開始」ではなく、panel 上の位置関係を表す。
-同じ開始時刻の2件目以降は、開始時刻を過ぎても future に含まれる場合がある。
-current 以外の block を、非選択という理由で取り除かない。
-
-割合から切替時刻を作る方式と、終了時刻を理由に以前の block へ戻る方式は採用しない。
-強調やスクロールのDOM処理は history に持ち込まない。
+- currentTimeは有限の非負数とし、違反は空入力でもRangeErrorで拒否する。
+- 各入力要素を必ず1区分に1回だけ入れる。各区分は言語別配列で、言語内の入力順を維持する。
+- 同時刻・重なりのある全件を保持し、currentを1件へ絞らない。各字幕自身の終了時刻でpastへ移す。
+- 空白区間のcurrentは空配列。先頭より前は全件future、末尾の終了後は全件pastとする。
+- 同じtimelineと時刻なら、前回の結果や再生方向に依存せず同じ分類を返す。
+- 新しい区分配列を返すが、内部では読み取り専用の元の字幕データ要素を共有できる。要素・入力配列を変更せず、並べ替え・本文結合をしない。
+- source・TextTrack・video・DOMを直接読まず、購読・timer・スクロール・独立した現在字幕storeを持たない。
 
 #### 境界時刻の例
 
-| block の開始時刻・表示順 | 再生時刻 | current |
-|---|---|---|
-| A:10秒、B:11秒、C:12秒 | 10秒未満 | null |
-| A:10秒、B:11秒、C:12秒 | 10秒以上11秒未満 | A |
-| A:10秒、B:11秒、C:12秒 | 11秒以上12秒未満 | B |
-| A:10秒、B:11秒、C:12秒 | 12秒以降 | C |
-| A:10秒、B:10秒、C:18秒 | 10秒以上18秒未満 | A。Bはfutureに残す |
-| A:10秒、B:10秒、C:18秒 | 18秒以降 | C。A・Bはpastに残す |
+同じ言語にA:[10,20)、B:[12,13)がある場合:
+
+| 再生時刻 | past | current | future |
+|---|---|---|---|
+| 9 | 空 | 空 | A、B |
+| 12 | 空 | A、B | 空 |
+| 13 | B | A | 空 |
+| 20 | A、B | 空 | 空 |
+
+表示は区分順であり、全入力を開始時刻だけで一本に並べた順とは区別する。
+期間が重なる字幕は別の区分へ移る時点も異なる。rendererがこの区分を補正しない。
 
 ### `panel-session.ts`
 
@@ -1805,7 +1573,7 @@ function createSessionLifecycle(
 - 待機 cleanup の失敗は記録し、停止・再開始・破棄の後処理を継続する。
 - getState は state の外側と waiting 情報をコピーする。処理中の target と DOM 参照は共有するが、stop / dispose 後は target:null、waiting:null、status:stopped とする。
 - getSubtitleSnapshot は現在の字幕接続の getSnapshot に委譲する。接続なし・破棄後は null とし、接続中の空 snapshot と区別する。
-- lifecycle は字幕 truth や取得結果を保持・再コピーしない。データ境界は本節の subtitle-session API を参照する。
+- lifecycle は元の字幕データ や取得結果を保持・再コピーしない。データ境界は本節の subtitle-session API を参照する。
 - subscribeSubtitle は即時通知せず、接続後の初回・接続の更新・旧接続のクリアを引数なしで通知する。状態購読と診断観測とは分離する。
 - データ通知の購読者の例外は記録して後続を継続する。登録単位で冪等に解除し、通知中に解除した登録は呼ばず、新規登録は次の更新から扱う。
 - 接続解除前に参照を切り離し、世代を更新する。中継購読の解除から字幕接続の破棄の順にすべて試し、失敗は記録する。
@@ -1901,7 +1669,7 @@ export type SubtitleTrackCandidate = ResolvedSubtitleTrack & {
   index: number;
 };
 
-/** cue 1 件分の一時表現。SubtitleBlock[] の構築前に利用する。 */
+/** cue 1 件分の一時表現。SubtitleTimeline の構築前に利用する。 */
 export type SubtitleCueSnapshot = {
   startTime: number;
   endTime: number;
@@ -1923,19 +1691,25 @@ export type SubtitleSourceChange =
 
 export type SubtitleSourceListener = (change: SubtitleSourceChange) => void;
 
-/** 欠けている言語の本文は null。両側欠損の block は builder が生成しない。 */
-export type SubtitleBlock = {
+/** 1言語の元時刻・本文を持つ値。cue・track・DOM参照を含めない。 */
+export type TimedSubtitleText = Readonly<{
   startTime: number;
   endTime: number;
-  primaryText: string | null;
-  secondaryText: string | null;
-};
+  text: string;
+}>;
 
-export type SubtitleHistorySnapshot = {
-  current: SubtitleBlock | null;
-  past: SubtitleBlock[];
-  future: SubtitleBlock[];
-};
+/** 言語別の字幕単位を保持する元の字幕データの正本。空の言語は空配列。 */
+export type SubtitleTimeline = Readonly<{
+  primary: readonly TimedSubtitleText[];
+  secondary: readonly TimedSubtitleText[];
+}>;
+
+/** 同じ元字幕データを時刻で分類した読み取り結果。currentも複数件・0件を許可する。 */
+export type SubtitleHistorySnapshot = Readonly<{
+  past: SubtitleTimeline;
+  current: SubtitleTimeline;
+  future: SubtitleTimeline;
+}>;
 
 export type SubtitleHistoryView = SubtitleHistorySnapshot;
 
@@ -2072,8 +1846,8 @@ export const composeDisposers = (
 ### 禁止事項
 
 - `TextTrack` の採用ロジック
-- cue の対応付けロジック
-- `SubtitleBlock[]` の構築ロジック
+- 字幕の時刻分類ロジック
+- `SubtitleTimeline` の構築ロジック
 - current / past / future の導出ロジック
 - panel 内部 DOM の生成・差分更新
 - ON/OFF toggle の内部描画実装
@@ -2103,7 +1877,7 @@ export const composeDisposers = (
 
 ## 21. 今後の拡張原則
 
-新機能を追加しても、source、truth、renderer、session lifecycle の境界を崩さない。
+新機能を追加しても、source、元の字幕データ、renderer、session lifecycle の境界を崩さない。
 
 ### 境界を守る
 
@@ -2112,15 +1886,15 @@ export const composeDisposers = (
 | 追加したい責務 | 配置先の原則 |
 | --- | --- |
 | Apple TV+ からの取得、外部入力、track / cue の観測 | source 層、または Apple TV+ 固有 module |
-| 字幕や入力データの正規化、対応付け、表示単位の確定 | truth 層 |
-| current / past / future、検索結果、並び順など truth からの読み取り結果 | view helper 層 |
-| truth または view helper の結果を DOM に表示する処理 | renderer 層 |
+| 字幕や入力データの正規化、対応付け、表示単位の確定 | 元字幕の構築層 |
+| current / past / future、検索結果、並び順など 元の字幕データ からの読み取り結果 | view helper 層 |
+| 元の字幕データ または view helper の結果を DOM に表示する処理 | renderer 層 |
 | 開閉、選択、表示モードなどの一時的 UI 意思 | `ui-state.ts` |
 | 幅、配置、style、resize 追従などの画面幾何 | `player-layout.ts` または layout module |
 | listener、timer、observer、binding、extension DOM の開始・停止 | session lifecycle と各 owner module |
 | 保存設定 | `settings-store.ts` と `docs/settings-spec.md` |
 
-新しい UI を追加する前に、その UI が読む truth、必要な view helper、開始条件、停止条件、owner、dispose 対象を決める。  
+新しい UI を追加する前に、その UI が読む元の字幕データ、必要な view helper、開始条件、停止条件、owner、dispose 対象を決める。
 renderer が source を直接読むこと、source が panel DOM を更新すること、UI component が observer や timer を無所有で作ることは禁止する。
 
 ### 影響確認の順序
@@ -2128,15 +1902,15 @@ renderer が source を直接読むこと、source が panel DOM を更新する
 新機能の設計・実装では、次の順序で影響範囲を確認する。
 
 1. **source**: 入力はどこから得るか、Apple TV+ 固有の依存をどこに閉じ込めるか
-2. **truth**: UI の正本を何にするか、既存の `SubtitleBlock[]` を拡張するか、別の truth を作る必要があるか
+2. **元の字幕データ**: 唯一の `SubtitleTimeline` から導出できるか、共通型・責務の変更が必要か
 3. **view helper**: current / past / future のような読み取り専用の導出が必要か
-4. **renderer**: truth または view helper の出力だけで描画できるか
+4. **renderer**: 元の字幕データ または view helper の出力だけで描画できるか
 5. **UI / layout state**: UI の意思と画面幾何を別々に扱えているか
 6. **lifecycle / cleanup**: start 条件、stop 条件、owner、`dispose()` の呼び出し元が一意か
-7. **test**: source、truth、renderer、session restart、cleanup のどこを検証するか
+7. **test**: source、元の字幕データ、renderer、session restart、cleanup のどこを検証するか
 
 この順序を飛ばして UI から実装を始めない。  
-truth と lifecycle の一貫性を確認する前に、panel、controls、overlay、補助 UI を増やさない。
+元の字幕データ と lifecycle の一貫性を確認する前に、panel、controls、overlay、補助 UI を増やさない。
 
 ### 新規ファイルの配置判断
 
@@ -2146,7 +1920,7 @@ truth と lifecycle の一貫性を確認する前に、panel、controls、overl
 | --- | --- |
 | Apple TV+ 再生 DOM の発見・解決 | `src/content/` |
 | session の開始、停止、再初期化、cleanup 合成 | `src/content/` |
-| 字幕取得、track 解決、cue 監視、truth 構築 | `src/subtitles/` |
+| 字幕取得、track 解決、cue 監視、元の字幕データ 構築 | `src/subtitles/` |
 | panel host と panel 描画 | `src/panel/` |
 | ON/OFF toggle、panel 開閉、将来の再生画面 control | `src/controls/` |
 | 再生画面と panel の幾何、幅、style、resize 追従 | `src/layout/` |
@@ -2154,5 +1928,5 @@ truth と lifecycle の一貫性を確認する前に、panel、controls、overl
 | Chrome Storage に保存する設定 | `src/settings/` |
 | 複数層で使う型、dispose、DOM helper、logger | `src/shared/` |
 
-配置先が複数候補に見える場合は、DOM を直接所有するか、truth を構築するか、表示するか、session resource を開始・停止するかで分ける。  
+配置先が複数候補に見える場合は、DOM を直接所有するか、元の字幕データを構築するか、表示するか、session resource を開始・停止するかで分ける。
 1つの module が複数の問いに答える必要がある場合は、責務が混ざっているため分割を検討する。

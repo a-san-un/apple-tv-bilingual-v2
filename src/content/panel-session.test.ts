@@ -14,14 +14,25 @@ import type { SubtitleSessionSnapshot } from '../subtitles/subtitle-session';
 
 const sessions: Disposable[] = [];
 
+/** @returns 各言語の入力がない状態を表す独立した空配列。 */
+const emptyTimeline = () => ({ primary: [], secondary: [] });
+
+/** @returns 3区分とも字幕を持たない期待値。 */
+const emptyHistory = () => ({ past: emptyTimeline(), current: emptyTimeline(), future: emptyTimeline() });
+
+/** @returns 接続中で字幕を持たない期待値。接続なしのnullとは区別する。 */
+const emptySnapshot = () => ({ timeline: emptyTimeline(), history: emptyHistory() });
+
+
+
 /**
  * 識別用本文を持つ snapshot を作る。
  * @param text primary 本文。
- * @returns 独立した block と history を持つ snapshot。
+ * @returns 独立したtimelineとhistoryを持つsnapshot。
  */
 const snapshot = (text: string): SubtitleSessionSnapshot => {
-  const block = { startTime: 0, endTime: 1, primaryText: text, secondaryText: '訳' };
-  return { blocks: [block], history: { past: [], current: block, future: [] } };
+  const timeline = { primary: [{ startTime: 0, endTime: 1, text }], secondary: [{ startTime: 0, endTime: 1, text: '訳' }] };
+  return { timeline, history: { past: emptyTimeline(), current: timeline, future: emptyTimeline() } };
 };
 
 /**
@@ -129,11 +140,11 @@ describe('panel-session', /** 接続契約のケースを登録する。 */ () =
     f.getSubtitleSnapshot.mockReturnValue(null);
     f.start();
     expect(f.mount.textContent).toBe('表示できる字幕はありません');
-    f.getSubtitleSnapshot.mockReturnValue({ blocks: [], history: { past: [], current: null, future: [] } });
+    f.getSubtitleSnapshot.mockReturnValue(emptySnapshot());
     f.subtitles.fire();
     expect(f.mount.textContent).toBe('表示できる字幕はありません');
     const next = snapshot('future');
-    next.history = { past: [], current: null, future: next.blocks };
+    next.history = { past: emptyTimeline(), current: emptyTimeline(), future: next.timeline };
     const before = JSON.stringify(next);
     f.getSubtitleSnapshot.mockReturnValue(next);
     f.subtitles.fire();

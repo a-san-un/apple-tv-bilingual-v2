@@ -47,7 +47,7 @@
 ### native subtitle menu
 
 - `src/subtitles/native-menu-sync.ts` は native menu DOM の探索、同期、listener cleanup を所有する
-- native menu の `change` 直後は、表示中 track の真実源として扱わない
+- native menu の `change` 直後は、表示中trackの確定根拠として扱わない
 - `change` 後に少なくとも 1 回の `requestAnimationFrame` を待ち、`TextTrack.mode === "showing"` を再解決する
 - `showing` の反映時点は切替方向によって異なる
 - `change` 時点、1フレーム後、500ms後のいずれでも反映し得る
@@ -130,7 +130,7 @@
 - DOM 上の契機だけで restart や新しい視聴を確定しない
 - 対象消失時は旧処理・参照を解放し、現在の有効 target がある場合だけ開始条件と readiness を評価する
 - seek は session 再生成の契機にしない
-- seek 自体を理由に既存 track binding を作り直さない。history の時刻更新と source 更新による truth 再構築の区別は、`docs/minimal-panel-architecture.md` §13 を参照する
+- seek 自体を理由に既存 track binding を作り直さない。history の時刻更新と source 更新による 元の字幕データ 再構築の区別は、`docs/minimal-panel-architecture.md` §13 を参照する
 - listener、observer、timer、track binding、拡張 DOM の owner は 1 つに限定する
 - 処理 session に属する track binding、cue listener、native menu binding、layout observer、panel host、controls binding は、それぞれの owner が cleanup する
 - OFF から ON に戻す操作経路と操作側 runtime は、字幕処理 session の寿命と区別する。詳細は architecture §12・§15〜§16 を参照する

@@ -11,8 +11,8 @@
 - 可能な限り自動化し、Apple TV+ 実画面依存の項目だけを手動スモークテストに残す。
 - まず typecheck、lint、unit test を常時実行できる状態にする。
 - pure function に寄せられる処理は unit test で確認する。
-- `settings-store.ts`、`text-track-resolver.ts`、`subtitle-block-builder.ts`、`subtitle-history.ts`、`player-layout.ts`、`shared/` 配下の pure utility、`ui-state.ts` は優先的に自動テスト対象にする。
-- `settings` と `resolver`、`block builder`、`subtitle history`、`ui-state` の接続は small integration test で確認する。
+- `settings-store.ts`、`text-track-resolver.ts`、`subtitle-timeline.ts`、`subtitle-history.ts`、`player-layout.ts`、`shared/` 配下の pure utility、`ui-state.ts` は優先的に自動テスト対象にする。
+- `settings` と `resolver`、`timeline構築`、`subtitle history`、`ui-state` の接続は small integration test で確認する。
 - Apple TV+ 実画面、`video.textTracks`、SPA 遷移、native subtitle UI、実 DOM 注入、実レイアウトだけを手動スモークテストに残す。
 - 手動確認は少数の固定手順にし、設定反映、字幕表示、シーク後復帰、SPA 遷移、cleanup を重点確認する。
 - debug log または health snapshot を用意し、現在の設定、採用 track、current subtitle、session 状態、layout 状態、UI state を短時間で確認できるようにする。
@@ -103,8 +103,8 @@ npm run test
 - resolver の採用結果から source への track の受け渡し
 - subtitle-session による resolver / source の接続と cleanup
 - session lifecycle による readiness 通過後の字幕接続の生成と、停止・再開始・破棄時の cleanup
-- `subtitle-block-builder.ts` と `SubtitleBlock[]` 構築
-- block builder / history / renderer 間のデータの受け渡し
+- `subtitle-timeline.ts` と `SubtitleTimeline` 構築
+- timeline構築 / history / renderer 間のデータの受け渡し
 - `subtitle-history.ts` と current / past / future 導出
 - controls / renderer と `ui-state.ts` の購読通知
 - 必要最小限の layout 計算入力と UI state 反映
@@ -182,7 +182,7 @@ npm run test
 
 5. Apple TV+ の対象ページを再読み込みする。build と拡張再読み込みだけで、開いているページの content script まで更新されたとは扱わない。
 
-6. 保存設定と再生対象を確認し、今回の接続範囲に対応する項目を実施する。設定を変更した場合は、保存後にページを再読み込みする。
+6. 保存設定と再生対象を確認し、検証対象の接続範囲に対応する項目を実施する。設定を変更した場合は、保存後にページを再読み込みする。
 
 実施結果には、使用したフラグの値、自動検証・build の結果、
 拡張とページの再読み込みの実施有無、未確認事項を記録する。
@@ -284,115 +284,79 @@ listener 解除失敗時の確認は「cleanup、二重 listener、二重描画�
 - native subtitle UI 連携追加時
 - track 解決ロジック変更時
 
-## `SubtitleBlock[]` と panel 表示の確認項目
+## 言語別timelineとpanel表示の確認項目
 
-対象ファイル:
-- `src/subtitles/subtitle-block-builder.ts`
-- `src/subtitles/subtitle-block-candidates.ts`
-- `src/subtitles/subtitle-history.ts`
-- `src/panel/panel-renderer.ts`
-- `src/content/panel-session.ts` と関連テスト
-- 再生経路への接続を担当する呼び出し側
+対象はsubtitle-timeline、subtitle-history、subtitle-session、panel-session、rendererとその接続先とする。
+型・構築・分類・描画・cleanupの正本はarchitecture §6・§11・§14・§17・§18を参照する。
+以下は確認条件・期待動作であり、記載だけで実装・実施済みとは扱わない。
 
-仕様の参照先:
-- builder の公開 API・入力条件・対応づけ・出力規則は、`minimal-panel-architecture.md` §17 の `subtitle-block-builder.ts` を正本とする。
-- history の導出仕様と境界例は、同節の `subtitle-history.ts` を正本とする。
-- panel の表示・自動追従は、同文書の §14 を正本とする。
-- 共通型は同文書の §18 を参照し、両言語の本文型と `null` による欠損表現が一致することを確認する。
+### timeline構築の基本動作と責務境界
 
-以下は確認計画であり、項目の記載だけで実装・テスト実施済みと扱わない。
-仕様の数式・閾値は正本を参照し、ここでは確認する入力と期待動作を整理する。
+- 両言語空・片言語・両言語を受け付け、元時刻・本文・言語内の順序を保持する。
+- 全入力を検証し、順序違反・非有限・負時刻・終了≦開始・空白だけの本文をRangeErrorで拒否する。
+- 入力や実trackを変更せず、時刻・本文だけの値をコピーする。cue・track・video・DOM参照を含めない。
+- 同時刻複数件・同じ本文の別入力要素も保持し、対訳ペア・採点・消費・重複除去・本文結合・意味による分割を行わない。
+- 縦書きだけを理由に字幕を除外せず、表示用本文変換と時刻分類を分離する。
 
-### builder の基本動作と責務境界
+### 元字幕単位のhistoryの自動テスト
 
-- primary / secondary とも空なら、空の配列を返すこと。
-- primary のみ1件なら、その時刻・本文と `secondaryText: null` を持つ1 block を返すこと。
-- secondary のみ1件なら、その時刻・本文と `primaryText: null` を持つ1 block を返すこと。
-- 同じ開始・終了時刻の primary / secondary が各1件なら、二言語を持つ1 block を返すこと。
-- 片言語1件と同時刻範囲の二言語各1件では、時刻と本文を丸め・trim・補完せずに返すこと。
-- 入力配列と各 cue を変更しないこと。
-- 呼び出しごとに新しい配列と block オブジェクトを返し、前の戻り値の変更が次の結果へ影響しないこと。
-- cue の track 管理情報や実 `TextTrack` の状態を読まないこと。
-- 戻り値に cue・track の参照や id / key を含めないこと。
-
-### builder の入力検証・対応づけ・出力
+この表は既存の元字幕単位の分類を検証する。表示ブロック全体の強調条件とは別の契約である。
 
 | 分類 | 確認する内容 |
 |---|---|
-| 入力条件 | 同時刻を含む開始時刻順を受け付け、順序違反・非有限・負時刻・終了≦開始・空本文・空白だけの本文を RangeError で拒否する |
-| 入力保持 | 入力を変更せず、有効本文の空白・改行を保持し、黙った補正・並べ替えを行わない |
-| 完全重複 | 同言語・同開始・同終了・同本文だけを除去し、最初の1件と残りの入力順を維持する |
-| 重複ではない字幕 | 異なる時刻・本文・言語の字幕と、結合後の反復語を残す |
-| 同時刻正規化 | 重複除去後の連続・同開始・同終了を1件・2件・3件・多数件で確認し、件数上限なしで処理する |
-| 正規化の除外 | 非連続、開始だけ一致、終了だけ一致、微小な時刻差を結合しない。並べ替え・丸めをしない |
-| 正規化の独立性 | primaryのみ・secondaryのみ・両側で確認し、他言語の候補なしでも単位を保持する |
-| 正規化の順序 | 完全重複除去後の連続性で判定し、先頭の元入力位置を保つ。連結後の重複除去をしない |
-| 単位ベースの評価 | 生cue数で重み付けせず、正規化後の件数で採点・同点判定する。正規化は対応結合回数に含めない |
-| 単位の消費 | 正規化後のoffsetと件数で前進し、再利用・欠落を防ぐ。元inputIndexを配列添字として扱わない |
-| 対応候補 | 正規化単位の1対1・1対2・2対1、時刻ずれ、部分的な重なりを確認する |
-| 重なり率の境界 | 60%未満・ちょうど・超過、境界だけの接触を確認する |
-| 隣接2単位 | 空白率10%未満・ちょうど・超過、空白0、時間の重なりを確認する |
-| 結合範囲 | 最小開始〜最大終了を使う。先の単位が後の単位より遅く終わる場合も確認する |
-| 結合制限 | 正規化後の非隣接・3単位以上の連鎖結合・強制結合を行わない。同時刻正規化とは区別する |
-| 全体評価 | 局所的な最高点と系列全体の最高点が異なる例を用意し、再利用なし・順序維持で合計最大を選ぶ |
-| 同点 | 合計点、対応結合回数、対応単位数、対応リストの辞書順の各比較段階を確認する |
-| 閾値ちょうどの採否 | 60%の1対1は未対応との同点で選び、60%の結合はほかに利点がなければ未対応を選ぶ |
-| 未対応 | 減点せず、両言語とも正規化済み単位ごとに片言語 block として残す |
-| 本文結合 | 単位内・採用単位間の入力順と、元の空白・改行・タグを保持する |
-| 欠損 | ない側を null とし、両方 null の block は生成しない |
-| 出力時刻 | primary があれば primary 側、なければ secondary 側。結合時は最大終了を使う |
-| 出力順 | primary の入力順を軸に secondary のみを開始時刻で挿入し、同時刻では primary を含む block を先にする |
-| 片言語・空入力 | primary のみ複数、secondary のみ複数、両言語空を確認する |
-
-builderとhistoryの接続では、ブラウザで観測した同一開始・終了の英語3断片と
-日本語1cueを回帰入力とし、英語全文と日本語が1blockになり、
-currentから末尾の英語断片が分離しないことを確認する。
-
-正規化条件外の同時刻blockが残る場合は、既存のhistory選択規則を維持する。
-
-### history の自動テスト
-
-| 分類 | 確認する内容 |
-|---|---|
-| current 選択 | 開始済みの最新開始時刻を選び、開始時刻ちょうどで切り替わる |
-| 同時刻 | 表示順で最初を選び、後続の同時刻 block も future に残す |
-| 終了時刻 | 終了による切替や以前の block への復帰を行わない |
-| 空白区間・末尾 | 次の開始まで、最後に選ばれる current を維持する |
-| 先頭・空配列 | 先頭より前は current:null・past空・全行future。空配列は current:null・past/future空 |
-| 分割 | past/current/future を元の block 順で構成し、非選択を理由に欠落・重複させない |
-| seek | 前進・後退・直接seekでも、同じ時刻とblockから同じ結果を返す |
-| 不正時刻 | NaN・Infinity・負の currentTime を RangeError で拒否する |
-| 不変性と責務 | 入力を変更・並べ替えせず、source・TextTrack・video・DOMを直接読まない |
+| 完全な分割 | 各入力要素がpast/current/futureのちょうど1区分へ入り、欠落・二重登録がない |
+| 開始境界 | startTimeちょうどでfutureからcurrentへ入る |
+| 終了境界 | endTimeちょうどでcurrentからpastへ移る |
+| 同時刻・重なり | currentの全件を保持する。先頭1件だけ選ばず、長い字幕の途中に短い字幕が重なる例も確認する |
+| 空白区間・末尾 | currentを空にし、終了済みの字幕を現在として維持しない |
+| 入力順 | 各区分の言語内順序を維持し、言語間のペアを推測しない |
+| seek | 前進・後退・直接seekで、同じ元字幕データと時刻なら同じ分類になる |
+| 不正時刻 | 空入力でもNaN・Infinity・負時刻を拒否する |
+| 不変性と責務 | 入力を変更せず、source・TextTrack・video・DOMや過去の呼出し状態へ依存しない |
 
 ### 再生経路への接続の確認
 
-| 分類 | 確認する内容 |
+- source更新では同じ入力からtimelineとhistoryを構築し、完了後に公開・通知する。
+- 時刻だけの更新では保持済み元の字幕データから分類し、現在字幕のためのsource再走査・再bind・全体restartを追加しない。
+- 元の字幕データ構築失敗ではtimelineと全区分をクリアし、不正な再生時刻では有効なtimelineを保持して全区分を空にする。
+- 接続なしのnullと、接続中の空snapshotを区別する。取得だけで再構築・時刻更新を行わない。
+- 取得結果の変更が内部へ伝わらず、通知中の解除・再入・停止・再開始で古い結果が新接続を上書きしない。
+- disposeで元の字幕データ・history・購読者と既存資源を解放し、残存callbackを無効化する。解除試行と成功を区別する。
+
+#### panel実装前のログ観測手順
+
+1. 開発用ログフラグと保存設定・有効状態を確認し、手動スモーク前の準備に従いbuild・拡張・ページの再読み込みを行う。
+2. 公開snapshotの接続状態、言語別timeline件数、各区分の言語別件数・対象時刻・本文を確認する。デバッガで取得する場合は、同じ呼出しの入力・結果を1つのオブジェクトとしてコピーする。
+3. source更新と時刻だけの更新、空区分と未取得、接続なしを区別する。要約ログだけでは全配列の一致を証明しない。
+4. 通常利用・配布前は本文を含む診断を無効にする。ログ確認を描画・追従・全資源解除の実機確認の代わりにしない。
+
+### 表示ブロックと補助字幕の検証
+
+製品の期待動作はarchitecture §14、実装順はworkflow Phase 6を正本とする。未確定事項は確定後に入力と期待値を追加し、推測で成功条件を作らない。
+
+| 検証対象 | 入力と期待結果 |
 |---|---|
-| 想定した入力条件違反 | 呼び出し側で処理し、該当更新の block/history を空にして、古い字幕を現在の結果として残さない |
-| 再生への影響 | 入力条件違反で動画再生自体を停止しない |
-| 予期しない例外 | 一括して握りつぶさない |
-| 責務境界 | 例外処理・source制御を builder / history に持ち込まない |
-| lifecycle のデータ境界 | 接続なしの null と接続中の空 snapshot を区別し、取得時だけ字幕接続へ委譲する |
-| lifecycle の更新中継 | 初回接続・更新・クリアを状態購読と分離して通知し、通知だけでは snapshot を取得しない |
-| 中継の寿命 | 購読解除失敗後の cleanup 継続、旧 callback の無効化、通知中の停止・再開始・破棄を自動テストする |
+| 元字幕の不変性 | 分離・結合・配置後もタグ付き原文・開始終了・言語内順序を保持し、入力を変更・削除しない |
+| 同時刻の枠 | 開始終了が完全一致する学習言語1件・2件・3件・多数件を保持する。原文結合・重複除去・切捨てをしない |
+| 1枠と複数母国語 | architecture §14.7の英語2件・日本語3件を同じ枠へ収める |
+| 複数枠の結合 | 同じ1件の母国語が連続した学習言語2枠・3枠・多数枠へ正の時間で重なる例を確認する。端点の接触だけは対象外 |
+| 候補の競合 | 母国語の開始が早い順、同時刻なら元の入力順で採用する。確定済み枠を再結合せず、母国語を捨てない |
+| 競合の具体例 | A:[10,12)、B:[12,14)、C:[14,16)、母国語①:[10,14)、②:[12,16)から、A・B・①・②の枠:[10,16)とCの枠:[14,16)を得る |
+| 母国語の配置 | 結合に使わなかった母国語を最大重なりへ1回だけ配置し、同点では開始の早い枠を選ぶ。重なりがなければ母国語のみの枠を残す |
+| 配置後の再結合禁止 | 母国語追加で範囲が延びても、学習言語枠の結合をやり直さない |
+| ブロック境界 | §14.7の開始48.09800833333331ちょうどで全体強調を開始し、終了52.01037777777778ちょうどで外す |
+| 内部の空白 | 日本語切替間・英語先行終了・内部に現在有効な元字幕がない区間でも、枠の範囲内なら全体強調する |
+| 囲みの分離 | `〝コ︱チ〟`等を補助へ分け、会話ブロックとその範囲へ混ぜず、原文と元時刻を保持する |
+| 配置に依存しない抽出 | 同じ囲み本文のvertical・line・positionを変更しても抽出結果が変わらない。囲みのない長い訳文を縦書きだけで分けない |
+| 本文の準備 | 標準解析・rt除去・親文字・空白・改行・記号を既存回帰入力で確認し、HTMLへ直接挿入しない |
+| 未確定条件 | 長い候補、最大重なりの比較区間・最終同点、囲みの例外、補助表示、重なるブロックの強調は確定後に検証する |
+| 更新とseek | source更新でだけ構成を導出し、同じ入力なら再生方向に依存しない。時刻更新・取得でsource再走査しない |
+| 公開境界 | コピー変更が内部へ伝わらず、元データと派生結果が同じ世代で公開される |
+| 失敗と解放 | 元データ構築失敗・表示導出失敗・不正時刻を区別する。停止・再接続後の旧通知・旧DOMを残さない |
 
-builder の基本ケースだけでなく、対応づけ・欠損・出力順・入力条件違反をそれぞれ確認する。
-builder、history、再生経路への接続、panel の確認結果は区別して記録する。
-panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / history をログで観測し、
-以下の panel 表示の手動確認とは分けて記録する。
-
-#### panel 実装前のログ観測手順
-
-1. `src/content/index.ts` の `DEBUG_SUBTITLE_SNAPSHOT_LOG` を true にする。有効な保存設定と extension enabled が必要で、ログフラグ自体は拡張を ON にしない。
-2. 「手動スモーク前の準備」に従って build・拡張再読み込み・ページ再読み込みを行う。
-3. Apple TV+ 再生画面の DevTools Console で Info を表示し、`subtitle snapshot` で絞り込む。logger の最低レベルは info 以下にする。
-4. `summary` は取得時点の JSON 文字列。connected、blockCount、firstBlock / lastBlock、current、pastCount / futureCount、previous / next を確認する。各 block は時刻と両言語の本文・null を含む。
-5. 通常再生・前後seek・字幕track切替・再生対象切替を観測する。接続なしは connected:false、接続中の空結果は connected:true・blockCount:0 として区別する。
-6. 通常利用・配布前はログフラグを false にして再 build する。字幕本文が Console に含まれるため、共有時は必要部分だけに絞る。保存・外部送信機能は追加しない。
-
-同じ要約は重複出力しない。全字幕配列は出さず、要約対象外の block のみの変化はログに現れない。
-有効中は更新ごとに snapshot のコピー取得が発生するが、フラグ無効時は購読も取得もしない。
-取得・出力処理の失敗は記録し、次の更新で再試行する。ログ確認は panel の描画・スクロール確認の代わりにはしない。
+手動確認では拡張とページを再読み込みし、同じ枠の未来・現在・過去での保持、全体強調、補助字幕の分離、前後seekを確認する。
+構築・状態導出・描画・実パーサー・自動追従・全資源解除の確認範囲を分け、再現できない条件は未観測とする。
+診断の共有では同じ取得時点のオブジェクト全体をコピーすればよい。要約ログだけで全字幕・全状態の一致を証明したとは扱わない。
 
 ### panel 接続の自動テスト
 
@@ -400,7 +364,7 @@ panel 実装前のブラウザ確認は、workflow Phase 5 に従って block / 
 この節は接続 module 単体の観点であり、lifecycle 組込み・実画面の検証とは区別する。
 
 - 初回取得、字幕更新、UI 更新で、最新 history と表示状態を renderer へ渡すこと
-- null snapshot、空 history、current なしの future を扱い、入力を変更・補完しないこと
+- null snapshot、空 history、currentが空のpast/future を扱い、入力を変更・補完しないこと
 - panel close で字幕接続や外部 UI store を破棄しないこと
 - renderer 生成、購読登録、初回取得・描画の失敗で、生成・登録済み資源の cleanup を試すこと
 - 初期化と cleanup が両方失敗した場合、両原因を保持すること
@@ -430,54 +394,45 @@ callback 内は観測にとどめ、正常終了・期待値・呼出回数は�
 
 entry の配線・pagehide からの解除到達と実画面確認は、上記接続テストだけで完了としない。
 
+### 元字幕単位の独立時刻・3区分の回帰入力
+
+以下は元データ保持・字幕単位の分類の固定入力であり、補助字幕を会話ブロックへ混ぜる表示仕様ではない。
+
+- `pasted_text_1793248904.txt`の対象英語3件・日本語2件について、raw本文・時刻・言語内の順序を固定する。
+- 1分39秒: current.primaryはashes、current.secondaryは長い訳文と `〝コ︱チ〟`。opportunityはpast、gloryはfutureに入る。
+- 1分41.6秒: gloryと長い日本語訳がcurrentに残り、先の英語2件と `〝コ︱チ〟` はpastへ入る。
+- 日本語訳の終了時刻102.6862111111111秒ちょうどでは、その訳文と対象英語3件・短い日本語はpastに入り、対象5件のcurrent/futureは空となる。
+- 同一開始・終了時刻の英語3断片も、全件が同じ区分に入り、入力順・本文を保持することを別ケースで確認する。
+- `independent-subtitle-view.test.ts`内の仮説検証は、製品関数・全入力・Chrome描画の検証と区別する。製品へ移行するときは同じ固定値で製品の構築・分類関数を直接検証し、試作処理を重複して残さない。
+
 ### 字幕本文の表示用変換の回帰ケース
 
 - 固定ケースは `src/panel/subtitle-text-regression-cases.ts`。2026-10-28 の実 cue 観測から、日本語6件・英語6件の raw / expectedPlain / expectedRtCount を保持する。
 - ruby の読み仮名と傍点を除外し、親文字・改行を保持する。c / i の装飾は本文へ混ぜず、音符・句読点・効果音表記・半角および全角空白を保持する。
-- タグのない本文は変更しない。生 cue と truth の本文保持テストとは分ける。
+- タグのない本文は変更しない。生 cue と元の字幕データの本文保持テストとは分ける。
 - helper は `src/panel/subtitle-text.ts`、テストは `src/panel/subtitle-text.test.ts`。手作り fragment で rt 除外・空白と記号の保持・二重解釈防止・失敗伝播を検証する。これは WebVTT パーサー自体の検証ではない。
 - 同じ12ケースを標準 VTTCue の assertion に登録する。API 不在環境では明示的に skip し、成功件数と分ける。jsdom では API 不在を確認済み。モックの成功を実パーサーの成功と扱わない。
 - renderer の接続テストでは helper を観測済み結果へ差し替え、実例12件の言語領域・入力保持・textContent 描画を確認する。実パーサーの成功とは扱わない。
-- 変換失敗時は当該本文だけの raw fallback・他言語と後続更新の継続・renderer ごと一度の警告を確認する。空結果でも block / 空行を保持し、空 history と dispose 後は変換しない。
+- 変換失敗時は当該本文だけの raw fallback・他言語と後続更新の継続・renderer ごと一度の警告を確認する。空結果でも字幕単位と空行を保持し、空 history と dispose 後は変換しない。
 - 実 helper の API 不在と renderer の fallback も接続して確認する。実装した helper / renderer の Chrome 実行は未確認で、Console 上の先行検証とは区別する。
 - 実機での変換観測と限界は `docs/apple-tv-dom-observations.md` の「Phase 6: 実 cue の表示用変換の観測」を参照する。
 
-### panel 表示・自動追従の手動確認
+### panel表示と操作の手動確認
 
-拡張を ON にして panel を開き、次を確認する。
-必要な片言語・長大 block・同時刻などを実データで再現できない場合は、未確認として記録する。
+拡張をONにしてpanelを開き、architecture §14の確定仕様と照合する。公開型が字幕単位のままの実装を、ブロック表示の成功とは扱わない。
 
-| 分類 | 確認する内容 |
+| 対象 | 確認内容 |
 |---|---|
-| 言語領域 | 学習言語が上、母国語が下。欠けた側も空行1行を確保し、本文を別の言語領域へ移さない |
-| 本文と順序 | 改行を保持し、history の表示順を変えない |
-| 強調と保持 | current が切り替わっても他の行を消さず、終了後の行も表示対象として残す |
-| 同時刻 | 先頭だけを current にし、後続も表示する。全行が順に強調されることは要求しない |
-| current なし | future を表示する。未取得字幕を補完しない |
-| 表示範囲内 | current 全体が収まる間は、強調だけを進めてスクロールしない |
-| 下端の移動 | 新しい current 全体が収まらなくなったら、その block を上端へ移す |
-| 動き | アニメーションを付けず、自動スクロール自身で追従停止しない |
-| 手動操作 | スクロールで追従停止。current の計算・強調は続け、閲覧位置を勝手に移動しない |
-| 現在位置に戻る | current を上端へ表示して追従再開。current なしなら先頭へ |
-| seek | 追従中はseek先のcurrentを上端へ。停止中は追従停止を維持。追従中でcurrentなしなら先頭へ |
-| 再表示 | panel を開き直すと current を上端へ表示して追従再開。current なしなら先頭へ |
-| source 更新 | 追従中は通常規則、currentがなくなれば先頭へ。停止中は閲覧位置を可能な範囲で維持する |
-| 長大 block | 表示範囲より高くても上端合わせを繰り返さない |
-| 末尾 | 最大スクロール位置までとし、上端合わせ用の余白を追加しない |
-| 非表示 | extension OFF・panel close 時は非表示になる |
-| cleanup | session終了・表示破棄後に旧イベント・購読・スクロール処理が残らない。cleanupの確認項目と合わせて検証する |
+| ブロックの保持 | 同じ元データでは未来・現在・過去で枠の構成を変えず、終了した枠も保持する |
+| 全体強調 | 学習言語と母国語を含む枠全体を、最早開始以上・最遅終了未満で強調する |
+| 補助字幕 | 囲み範囲が会話の構成・結合・強調範囲へ混ざらず、元データから削除されない |
+| 本文 | 学習言語を上、母国語を下へ表示し、各言語の順序・改行・空白を保持する |
+| 空・片言語 | 存在しない字幕を補完・他言語へ移動しない。詳細表示は確定した規則で検証する |
+| seekと更新 | 同じ入力と時刻なら同じ枠と状態へ戻り、旧世代を再表示しない |
+| 操作と解放 | closeとOFFを区別し、停止後の旧通知・DOM・スクロール処理を遮断する |
 
-期待結果:
-- renderer は source や TextTrack を直接読まず、渡された truth / history に従う。
-- 自動追従を理由に current の選択規則を変更しない。
-- 表示対象の欠落・重複がなく、手動閲覧と自動追従を区別できる。
-- 追従状態を Chrome Storage に保存しないことは、コード・自動テストで確認する。
-
-実施タイミング:
-- builder / history の各実装単位の直後に対象の自動テストを追加・実行する。
-- 再生経路への接続後、panel 実装前に block / history をブラウザのログで確認する。
-- panel renderer・自動追従の実装後に、手動確認を行う。
-- cue 対応づけ・history・追従ロジック変更時に、関係する回帰確認を行う。
+自動追従は案内対象と空の現在位置の規則を確定してから検証する。手動閲覧中の位置維持、自動スクロールとの操作区別、長い領域の反復移動防止、末尾余白なし、非保存の制約を確認する。
+rendererがsource・video・TextTrackを直接読まないことはコードと自動テストでも検証する。ログ確認を実パーサー・自動追従・全資源解除の成功の代わりにしない。
 
 ## ON/OFF toggle の確認項目
 
@@ -516,7 +471,7 @@ entry の配線・pagehide からの解除到達と実画面確認は、上記�
 - トグル操作を即時反映して保存結果を確認し、保存後の get や一致確認を行わないこと。
 - 読込失敗では「設定読込失敗」「OFFを保存」、型不正では「設定値不正」「OFFを保存」を表示すること。
 - エラー中も通常のトグルで ON にでき、「OFFを保存」では ON にせず OFF を明示保存できること。
-- 保存失敗でも今回の選択を維持し、「未保存」「再保存」へ切り替わること。
+- 保存失敗でも現在の選択を維持し、「未保存」「再保存」へ切り替わること。
 - 再保存は現在値の書込みだけを行い、処理の再起動・panel の開き直しを行わないこと。
 - 保存成功時は理由表示・回復ボタンが取り除かれ、通常時に再保存ボタンがないこと。
 - 連続操作の保存が直列化され、古い結果で最新の状態・通知を上書きしないこと。
@@ -685,7 +640,7 @@ small integration test で確認する項目:
 - [ ] seek 前後で playback session identity が変わらない。
 - [ ] seek 前後で primary / secondary track binding が重複しない。
 - [ ] seek 後に panel の current / past / future が更新される。
-- [ ] seek 後は、保持済み truth と現在時刻から current / past / future が更新される。
+- [ ] seek 後は、保持済み 元の字幕データ と現在時刻から current / past / future が更新される。
 - [ ] seek 後に cuechange が発生した場合も、新しい cue の内容が反映される。
 - [ ] seek 後に panel host、layout observer、native menu listener が再生成されない。
 - [ ] seek 後に二重 listener による重複描画が発生しない。
@@ -693,8 +648,8 @@ small integration test で確認する項目:
 期待結果:
 - seek は restart reason ではない。
 - seek により session、panel host、layout observer、native menu listener を再生成しない。
-- seek 自体を理由に cue 本文の再取得や block の再構築を行わず、保持済み truth から history を現在位置へ更新する。
-- source の更新や未取得 cue の読込みによる truth の再構築は、時刻だけの更新とは分けて確認する。
+- seek 自体を理由に cue本文の再取得やtimelineの再構築を行わず、保持済み 元の字幕データ から history を現在位置へ更新する。
+- source の更新や未取得 cue の読込みによる 元の字幕データ の再構築は、時刻だけの更新とは分けて確認する。
 - seek 後に同じ cue が重複して描画されない。
 
 実施タイミング:
@@ -893,7 +848,7 @@ callback 内では取得結果などを観測し、期待値・正常終了・�
 - ON/OFF toggle が panel 開閉と混同されていない。
 - panel 開閉ボタンが拡張全体の状態を変えない。
 - primary / secondary の採用が壊れていない。
-- `SubtitleBlock[]` の current / past / future 導出が壊れていない。
+- `SubtitleTimeline` の current / past / future 導出が壊れていない。
 - 再生、一時停止後に字幕表示が復帰する。
 - `textTracks.length === 0` を waiting state として扱い、ready 到達後にだけ subtitle source を開始する。
 - readiness 待機中に OFF へ切り替えた場合、字幕処理の待機に属する retry、timer、observer が停止する。
@@ -911,7 +866,7 @@ callback 内では取得結果などを観測し、期待値・正常終了・�
 
 実施タイミング:
 - track resolver 変更時
-- subtitle block builder 変更時
+- subtitle timeline構築 変更時
 - history 変更時
 - session-lifecycle 変更時
 - panel / controls / layout 変更時
@@ -949,7 +904,7 @@ DOM 残留がある場合は、Elements の状態も残す。
 - primary track:
 - secondary track:
 - current subtitle:
-- `SubtitleBlock[]` 件数:
+- 言語別timeline件数:
 - current の有無:
 - past / future 件数:
 - active session:
@@ -970,8 +925,8 @@ DOM 残留がある場合は、Elements の状態も残す。
 - バリデーション
 - track 正規化
 - track 採用判定
-- cue から `SubtitleBlock[]` を作る処理
-- `SubtitleBlock[]` から current / past / future を作る処理
+- cue から `SubtitleTimeline` を作る処理
+- `SubtitleTimeline` から current / past / future を作る処理
 - `ui-state.ts` の small store
 - `player-layout.ts` の幅計算、比率計算、状態導出など、実 DOM 計測に依存しない pure logic
 - shared utility

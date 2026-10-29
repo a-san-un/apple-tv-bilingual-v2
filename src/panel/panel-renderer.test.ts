@@ -9,24 +9,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as subtitleText from './subtitle-text';
 import { subtitleTextRegressionCases } from './subtitle-text-regression-cases';
-import type { SubtitleBlock } from '../shared/types';
+import type { SubtitleHistoryView, SubtitleTimeline, TimedSubtitleText } from '../shared/types';
 import { createPanelRenderer, type PanelRenderInput } from './panel-renderer';
 
-/**
- * 本文と時刻を持つテスト用 block を作る。
- * @param text 学習言語本文。
- * @returns 母国語本文も持つ block。
- */
-const block = (text: string): SubtitleBlock => ({
-  startTime: 0, endTime: 1, primaryText: text, secondaryText: `訳:${text}`,
-});
+/** @param text 固定する本文。@returns 1言語の時刻付き字幕単位。 */
+const entry = (text: string): TimedSubtitleText => ({ startTime: 0, endTime: 1, text });
+
+/** @param text 学習言語本文。@returns 両言語が独立した配列を持つ区分入力。 */
+const period = (text: string): SubtitleTimeline => ({ primary: [entry(text)], secondary: [entry(`訳:${text}`)] });
+
+/** 入力を組み立てるテストだけが区分を差し替える。描画APIのreadonly契約は維持する。 */
+type MutableRenderInput = Omit<PanelRenderInput, 'history'> & {
+  history: { -readonly [K in keyof SubtitleHistoryView]: SubtitleHistoryView[K] };
+};
 
 /**
  * 空 history を表示する入力を作る。
  * @returns テスト内で変更できる独立した入力。
  */
-const input = (): PanelRenderInput => ({
-  history: { past: [], current: null, future: [] },
+const input = (): MutableRenderInput => ({
+  history: { past: { primary: [], secondary: [] }, current: { primary: [], secondary: [] }, future: { primary: [], secondary: [] } },
   extensionEnabled: true, panelOpen: true,
 });
 
@@ -47,40 +49,42 @@ afterEach(/** mock とテスト DOM を次のケースへ持ち越さない。 *
 });
 
 describe('panel-renderer', /** この module の契約を検証するケースを登録する。 */ () => {
-  it('history 順に全行を表示し、指定された current だけを強調する', /** history 順に全行を表示し、指定された current だけを強調することを検証する。 */ () => {
+  it('過去・現在・未来の順で言語別に描画し、現在の全字幕を強調する', /** 区分と全件保持を確認する。 */ () => {
     const host = document.createElement('div');
     const renderer = createPanelRenderer(host);
     const data = input();
-    data.history = { past: [block('past')], current: block('current'), future: [block('future')] };
+    data.history = { past: period('past'), current: { primary: [entry('current1'), entry('current2')], secondary: [entry('現在')] }, future: period('future') };
     const before = JSON.stringify(data);
     renderer.render(data);
-    const rows = Array.from(host.querySelectorAll<HTMLElement>('[data-subtitle-block]'));
-    expect(rows.map(/** 行の上段本文を読む。@param row 描画済みの行。@returns 上段本文。 */ row => row.firstChild?.textContent)).toEqual(['past', 'current', 'future']);
-    expect(host.querySelectorAll('[aria-current="true"]')).toHaveLength(1);
-    expect(rows[1]?.getAttribute('aria-current')).toBe('true');
-    expect(rows[1]?.style.fontWeight).toBe('700');
+    const sections = Array.from(host.querySelectorAll<HTMLElement>('[data-subtitle-period]'));
+    expect(sections.map(/** @param el 区分要素。@returns 区分名。 */ el => el.dataset.subtitlePeriod)).toEqual(['past', 'current', 'future']);
+    const rows = Array.from(host.querySelectorAll<HTMLElement>('[data-subtitle-entry]'));
+    expect(rows.map(/** @param el 字幕要素。@returns 表示本文。 */ el => el.textContent)).toEqual(['past', '訳:past', 'current1', 'current2', '現在', 'future', '訳:future']);
+    const current = host.querySelectorAll<HTMLElement>('[aria-current="true"]');
+    expect(current).toHaveLength(3);
+    for (const row of Array.from(current)) expect(row.style.fontWeight).toBe('700');
     expect(JSON.stringify(data)).toBe(before);
     renderer.dispose();
   });
 
-  it('両側の欠損でも言語領域を移動せず、改行と空行の高さを指定する', /** 両側の欠損でも言語領域を移動せず、改行と空行の高さを指定することを検証する。 */ () => {
+  it('片言語でも領域を移動せず、改行と空行の高さを保持する', /** ペアの欠損ではなく言語別空配列を扱う。 */ () => {
     const host = document.createElement('div');
     const renderer = createPanelRenderer(host);
     const data = input();
-    data.history.future = [
-      { ...block('primary\nline'), secondaryText: null },
-      { ...block('unused'), primaryText: null, secondaryText: '母国語\n本文' },
-    ];
+    data.history.future = { primary: [entry('primary\nline')], secondary: [] };
     renderer.render(data);
-    const rows = Array.from(host.querySelectorAll('[data-subtitle-block]'));
-    expect(Array.from(rows[0]!.children).map(/** 言語領域の本文を読む。@param el 描画済みの言語領域。@returns 領域の本文。 */ el => el.textContent)).toEqual(['primary\nline', '']);
-    expect(Array.from(rows[1]!.children).map(/** 言語領域の本文を読む。@param el 描画済みの言語領域。@returns 領域の本文。 */ el => el.textContent)).toEqual(['', '母国語\n本文']);
-    for (const row of rows) {
-      for (const region of Array.from(row.children)) {
-        expect((region as HTMLElement).style.whiteSpace).toBe('pre-wrap');
-        expect((region as HTMLElement).style.minHeight).toBe('1lh');
-      }
+    let future = host.querySelector('[data-subtitle-period="future"]')!;
+    expect(future.children[0]?.textContent).toBe('primary\nline');
+    expect(future.children[1]?.textContent).toBe('');
+    for (const el of Array.from(future.querySelectorAll<HTMLElement>('[data-subtitle-role] > div'))) {
+      expect(el.style.whiteSpace).toBe('pre-wrap');
+      expect(el.style.minHeight).toBe('1lh');
     }
+    data.history.future = { primary: [], secondary: [entry('母国語\n本文')] };
+    renderer.render(data);
+    future = host.querySelector('[data-subtitle-period="future"]')!;
+    expect(future.children[0]?.textContent).toBe('');
+    expect(future.children[1]?.textContent).toBe('母国語\n本文');
     expect(host.querySelector('[aria-current]')).toBeNull();
     renderer.dispose();
   });
@@ -89,10 +93,10 @@ describe('panel-renderer', /** この module の契約を検証するケース�
     const host = document.createElement('div');
     const renderer = createPanelRenderer(host);
     const data = input();
-    data.history.current = block('<img src=x onerror=alert(1)> & <ruby>字</ruby>');
+    data.history.current = period('<img src=x onerror=alert(1)> & <ruby>字</ruby>');
     renderer.render(data);
     expect(host.querySelector('img, ruby')).toBeNull();
-    expect(host.querySelector('[data-subtitle-block]')?.firstChild?.textContent).toBe(data.history.current.primaryText);
+    expect(host.querySelector('[data-subtitle-entry]')?.firstChild?.textContent).toBe(data.history.current.primary[0]?.text);
     renderer.dispose();
   });
 
@@ -102,14 +106,14 @@ describe('panel-renderer', /** この module の契約を検証するケース�
     const data = input();
     renderer.render(data);
     expect(host.textContent).toBe('表示できる字幕はありません');
-    data.history.current = block('new');
+    data.history.current = period('new');
     renderer.render(data);
     renderer.render(data);
     expect(host.querySelectorAll('[data-subtitle-panel]')).toHaveLength(1);
-    expect(host.querySelectorAll('[data-subtitle-block]')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-subtitle-entry]')).toHaveLength(2);
     expect(host.querySelector('p')).toBeNull();
     renderer.render(input());
-    expect(host.querySelector('[data-subtitle-block]')).toBeNull();
+    expect(host.querySelector('[data-subtitle-entry]')).toBeNull();
     expect(host.textContent).toBe('表示できる字幕はありません');
     renderer.dispose();
   });
@@ -170,7 +174,7 @@ describe('panel-renderer', /** この module の契約を検証するケース�
     const remove = vi.spyOn(root, 'remove').mockImplementation(/** DOM 操作の失敗を再現する。@throws テストで用意した例外。 */ () => { throw error; });
     expect(/** assertion 対象の呼出しを遅延する。@returns 呼出し結果。@throws 対象処理が投げた例外。 */ () => renderer.dispose()).toThrow(error);
     const data = input();
-    data.history.current = block('must not render');
+    data.history.current = period('must not render');
     renderer.render(data);
     expect(/** assertion 対象の呼出しを遅延する。@returns 呼出し結果。@throws 対象処理が投げた例外。 */ () => renderer.dispose()).not.toThrow();
     expect(root.parentElement).toBe(host);
@@ -190,11 +194,11 @@ describe('panel-renderer の表示用本文変換', /** 接続ケースを登録
     const host = document.createElement('div');
     const renderer = createPanelRenderer(host);
     const data = input();
-    data.history.current = { startTime: 0, endTime: 1, primaryText: sample.language === 'en' ? sample.raw : null, secondaryText: sample.language === 'ja' ? sample.raw : null };
+    data.history.current = { primary: sample.language === 'en' ? [entry(sample.raw)] : [], secondary: sample.language === 'ja' ? [entry(sample.raw)] : [] };
     const before = JSON.stringify(data);
     try {
       renderer.render(data);
-      const row = host.querySelector('[data-subtitle-block]')!;
+      const row = host.querySelector('[data-subtitle-period="current"]')!;
       expect(row.children[0]?.textContent).toBe(sample.language === 'en' ? sample.expectedPlain : '');
       expect(row.children[1]?.textContent).toBe(sample.language === 'ja' ? sample.expectedPlain : '');
       expect(convert).toHaveBeenCalledTimes(1);
@@ -216,11 +220,11 @@ describe('panel-renderer の表示用本文変換', /** 接続ケースを登録
     const host = document.createElement('div');
     const renderer = createPanelRenderer(host);
     const data = input();
-    data.history.future = [{ ...block('<bad>'), secondaryText: '日本語' }, block('next')];
+    data.history.future = { primary: [entry('<bad>'), entry('next')], secondary: [entry('日本語'), entry('訳:next')] };
     const before = JSON.stringify(data);
     try {
       renderer.render(data);
-      expect(host.querySelector('[data-subtitle-block]')?.textContent).toBe('<bad>plain:日本語');
+      expect(host.querySelector('[data-subtitle-period="future"]')?.textContent).toBe('<bad>plain:nextplain:日本語plain:訳:next');
       expect(host.textContent).toContain('plain:next');
       renderer.render(data);
       expect(console.warn).toHaveBeenCalledTimes(1);
@@ -239,10 +243,10 @@ describe('panel-renderer の表示用本文変換', /** 接続ケースを登録
     const host = document.createElement('div');
     const renderer = createPanelRenderer(host);
     const data = input();
-    data.history.current = { ...block('<b></b>'), secondaryText: null };
+    data.history.current = { primary: [entry('<b></b>')], secondary: [] };
     try {
       renderer.render(data);
-      const row = host.querySelector('[data-subtitle-block]')!;
+      const row = host.querySelector('[data-subtitle-period="current"]')!;
       expect(row.children).toHaveLength(2);
       expect(row.textContent).toBe('');
       expect(host.querySelector('p')).toBeNull();
@@ -255,11 +259,11 @@ describe('panel-renderer の表示用本文変換', /** 接続ケースを登録
     vi.mocked(subtitleText.toSubtitlePlainText).mockReturnValue(literal);
     const host = document.createElement('div');
     const renderer = createPanelRenderer(host);
-    const data = input(); data.history.current = { ...block('encoded'), secondaryText: null };
+    const data = input(); data.history.current = { primary: [entry('encoded')], secondary: [] };
     try {
       renderer.render(data);
       expect(host.querySelector('img, ruby')).toBeNull();
-      expect(host.querySelector('[data-subtitle-block]')?.textContent).toBe(literal);
+      expect(host.querySelector('[data-subtitle-entry]')?.textContent).toBe(literal);
     } finally { renderer.dispose(); }
   });
 
@@ -268,10 +272,10 @@ describe('panel-renderer の表示用本文変換', /** 接続ケースを登録
     vi.stubGlobal('VTTCue', undefined);
     const host = document.createElement('div');
     const renderer = createPanelRenderer(host);
-    const data = input(); data.history.current = block('<i>raw</i>');
+    const data = input(); data.history.current = period('<i>raw</i>');
     try {
       renderer.render(data);
-      expect(host.querySelector('[data-subtitle-block]')?.firstChild?.textContent).toBe('<i>raw</i>');
+      expect(host.querySelector('[data-subtitle-entry]')?.firstChild?.textContent).toBe('<i>raw</i>');
       expect(host.querySelector('i')).toBeNull();
       expect(console.warn).toHaveBeenCalledTimes(1);
     } finally { renderer.dispose(); }
@@ -285,7 +289,7 @@ describe('panel-renderer の表示用本文変換', /** 接続ケースを登録
   it('dispose 後は変換も再描画もしない', /** 終了後の境界呼出しを防ぐ。 */ () => {
     const host = document.createElement('div'); const renderer = createPanelRenderer(host);
     renderer.dispose();
-    const data = input(); data.history.current = block('late');
+    const data = input(); data.history.current = period('late');
     renderer.render(data);
     expect(subtitleText.toSubtitlePlainText).not.toHaveBeenCalled();
     expect(host.children).toHaveLength(0);

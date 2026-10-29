@@ -113,9 +113,9 @@ export const createPanelSession = (
 
     current.renderer.render({
       history: snapshot?.history ?? {
-        current: null,
-        past: [],
-        future: [],
+        past: { primary: [], secondary: [] },
+        current: { primary: [], secondary: [] },
+        future: { primary: [], secondary: [] },
       },
       panelOpen: uiState.panelOpen,
       extensionEnabled: uiState.extensionEnabled,

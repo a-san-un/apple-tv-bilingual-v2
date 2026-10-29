@@ -6,7 +6,7 @@
  * source・TextTrack・再生時刻の読取、購読、自動追従、layout は担当しない。
  * 接続側は処理 session 終了時に dispose し、renderer の参照も手放す。
  */
-import type { SubtitleBlock, SubtitleHistoryView } from '../shared/types';
+import type { SubtitleTimeline, SubtitleHistoryView } from '../shared/types';
 import { toSubtitlePlainText } from './subtitle-text';
 
 /** 接続側が取得した表示データと現在の表示意思。renderer は保持しない。 */
@@ -31,7 +31,7 @@ export type PanelRenderer = {
  * 言語ごとの本文領域を作り、改行と欠損側の高さを保持する。
  *
  * @param doc host が所属する document。
- * @param text block の本文。null は本文なしとして空行の高さを確保する。
+ * @param text 字幕単位の本文。null は本文なしとして空行の高さを確保する。
  * @param convert 変換失敗時の fallback を含む表示用変換。
  * @returns HTML として解釈せず本文を表示する要素。
  */
@@ -49,31 +49,37 @@ const createTextRegion = (
 };
 
 /**
- * block を二言語の表示行へ変換する。時刻や本文から current を再選択しない。
- *
- * @param doc host が所属する document。
- * @param block history に含まれる block。変更しない。
- * @param current history が選択した current かどうか。
- * @param convert 表示用本文の変換境界。
- * @returns 学習言語、母国語の順で本文を持つ行。
+ * 1区分を学習言語・母国語の順で描画し、言語内の字幕順を維持する。
+ * @param doc hostが所属するdocument。
+ * @param period 描画する区分。時刻判定は呼出元が完了していること。
+ * @param values 区分に属する言語別字幕。変更・保持しない。
+ * @param convert fallbackを含む表示用本文変換。
+ * @returns 空の言語領域も保持する区分要素。対訳ペアは作らない。
  */
-const createBlockRow = (
+const createPeriodRegion = (
   doc: Document,
-  block: SubtitleBlock,
-  current: boolean,
+  period: keyof SubtitleHistoryView,
+  values: SubtitleTimeline,
   convert: (text: string) => string,
 ): HTMLElement => {
-  const row = doc.createElement('div');
-  row.dataset.subtitleBlock = current ? 'current' : 'other';
-  if (current) {
-    row.setAttribute('aria-current', 'true');
-    row.style.fontWeight = '700';
+  const region = doc.createElement('div');
+  region.dataset.subtitlePeriod = period;
+  for (const role of ['primary', 'secondary'] as const) {
+    const language = doc.createElement('div');
+    language.dataset.subtitleRole = role;
+    if (values[role].length === 0) language.append(createTextRegion(doc, null, convert));
+    for (const value of values[role]) {
+      const entry = createTextRegion(doc, value.text, convert);
+      entry.dataset.subtitleEntry = role;
+      if (period === 'current') {
+        entry.setAttribute('aria-current', 'true');
+        entry.style.fontWeight = '700';
+      }
+      language.append(entry);
+    }
+    region.append(language);
   }
-  row.append(
-    createTextRegion(doc, block.primaryText, convert),
-    createTextRegion(doc, block.secondaryText, convert),
-  );
-  return row;
+  return region;
 };
 
 /**
@@ -95,7 +101,7 @@ export const createPanelRenderer = (hostEl: HTMLElement): PanelRenderer => {
 
   /**
    * 本文を表示用へ変換し、失敗時も元の文字列で描画を継続する。
-   * @param text 入力 block の本文。変更・保持しない。
+   * @param text 入力字幕単位の本文。変更・保持しない。
    * @returns 変換結果、または失敗した場合の元本文。
    */
   const convertText = (text: string): string => {
@@ -123,17 +129,15 @@ export const createPanelRenderer = (hostEl: HTMLElement): PanelRenderer => {
       if (root === null) return;
       const doc = root.ownerDocument;
       const fragment = doc.createDocumentFragment();
-      for (const block of input.history.past) {
-        fragment.append(createBlockRow(doc, block, false, convertText));
-      }
-      if (input.history.current !== null) {
-        fragment.append(createBlockRow(doc, input.history.current, true, convertText));
-      }
-      for (const block of input.history.future) {
-        fragment.append(createBlockRow(doc, block, false, convertText));
+      let subtitleCount = 0;
+      for (const period of ['past', 'current', 'future'] as const) {
+        const values = input.history[period];
+        subtitleCount += values.primary.length + values.secondary.length;
+        fragment.append(createPeriodRegion(doc, period, values, convertText));
       }
       // 空 history だけでは未取得と track 不在を区別できないため、原因を断定しない。
-      if (fragment.childNodes.length === 0) {
+      if (subtitleCount === 0) {
+        fragment.textContent = '';
         const empty = doc.createElement('p');
         empty.textContent = '表示できる字幕はありません';
         fragment.append(empty);

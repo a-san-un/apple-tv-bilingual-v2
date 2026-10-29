@@ -18,8 +18,9 @@ import type {
     ResolvedSubtitleTrack,
     ResolvedTrackPair,
     SubtitleSourceChange,
-    SubtitleBlock,
+    SubtitleTimeline,
     SubtitleHistorySnapshot,
+    TimedSubtitleText,
 
     SubtitleTrackRole,
 } from '../shared/types';
@@ -33,12 +34,12 @@ import {
     summarizeTrack,
 } from './text-track-resolver';
 
-import { buildSubtitleBlocks } from './subtitle-block-builder';
+import { buildSubtitleTimeline } from './subtitle-timeline';
 import { deriveSubtitleHistory } from './subtitle-history';
 
 /** session の取得境界。cue・track・video の参照を含めない。 */
 export type SubtitleSessionSnapshot = {
-    blocks: SubtitleBlock[];
+    timeline: SubtitleTimeline;
     history: SubtitleHistorySnapshot;
 };
 
@@ -100,6 +101,14 @@ type TrackResolutionReason =
     | 'cuechange'
     | PlaybackSignal;
 
+/** @returns 呼出しごとに独立した空の言語別timeline。 */
+const createEmptyTimeline = (): SubtitleTimeline => ({ primary: [], secondary: [] });
+
+/** @returns 全区分の言語別配列が空のhistory。内部状態のクリアに使う。 */
+const createEmptyHistory = (): SubtitleHistorySnapshot => ({
+    past: createEmptyTimeline(), current: createEmptyTimeline(), future: createEmptyTimeline(),
+});
+
 /**
  * current video の track を選定し、source へ接続する。
  * 一覧変化と未取得 track の cue 読込みを再評価し、同じ採用結果なら再 bind しない。
@@ -132,8 +141,8 @@ export const createSubtitleSession = (
     let disposed = false;
     let primaryCueChanges = 0;
     let secondaryCueChanges = 0;
-    let blocks: SubtitleBlock[] = [];
-    let history: SubtitleHistorySnapshot = { current: null, past: [], future: [] };
+    let timeline: SubtitleTimeline = createEmptyTimeline();
+    let history: SubtitleHistorySnapshot = createEmptyHistory();
     let truthRevision = 0;
     const snapshotListeners = new Set<{ listener: () => void }>();
 
@@ -143,23 +152,24 @@ export const createSubtitleSession = (
         secondary: 0,
     };
 
-    /** @returns 配列・block をコピーした取得時点のデータ。内部状態は公開しない。 */
+    /** @returns 元の内部状態を変更できない写し。同じ取得結果内では対応する字幕単位を共有する。 */
     const getSnapshot = (): SubtitleSessionSnapshot => {
-        const copies = new Map<SubtitleBlock, SubtitleBlock>();
-        const copy = (block: SubtitleBlock): SubtitleBlock => {
-            const existing = copies.get(block);
+        const copies = new Map<TimedSubtitleText, TimedSubtitleText>();
+        /** @param value 内部の読み取り専用字幕単位。@returns この取得結果だけが共有する写し。 */
+        const copy = (value: TimedSubtitleText): TimedSubtitleText => {
+            const existing = copies.get(value);
             if (existing !== undefined) return existing;
-            const cloned = { ...block };
-            copies.set(block, cloned);
+            const cloned = { ...value };
+            copies.set(value, cloned);
             return cloned;
         };
+        /** @param value 言語別の内部配列。@returns 入力と独立した2配列。 */
+        const copyPeriod = (value: SubtitleTimeline): SubtitleTimeline => ({
+            primary: value.primary.map(copy), secondary: value.secondary.map(copy),
+        });
         return {
-            blocks: blocks.map(copy),
-            history: {
-                current: history.current === null ? null : copy(history.current),
-                past: history.past.map(copy),
-                future: history.future.map(copy),
-            },
+            timeline: copyPeriod(timeline),
+            history: { past: copyPeriod(history.past), current: copyPeriod(history.current), future: copyPeriod(history.future) },
         };
     };
 
@@ -191,19 +201,24 @@ export const createSubtitleSession = (
         }
     };
 
-    /** 保持済み truth からのみ導出する。不正時刻は空 history として扱う。 */
-    const refreshHistory = (): void => {
-        if (disposed) return;
-        const revision = ++truthRevision;
+    /**
+     * 次のtimelineと同じ世代の分類結果をそろえてから公開する。
+     * @param nextTimeline 検証済みの次のtruth。時刻だけの更新では保持済みtruthを渡す。
+     * @param revision 更新の世代。再入・停止で変わった場合は公開しない。
+     * @throws 予期しない時刻取得・分類の例外。クリアと通知後に再送出する。
+     */
+    const publishHistory = (nextTimeline: SubtitleTimeline, revision: number): void => {
         try {
-            const next = deriveSubtitleHistory(blocks, videoEl.currentTime);
-            if (!disposed && revision === truthRevision) {
-                history = next;
-                notifySnapshotChange(revision);
-            }
+            const nextHistory = deriveSubtitleHistory(nextTimeline, videoEl.currentTime);
+            if (disposed || revision !== truthRevision) return;
+            // 時刻取得中に旧データを観測されても、新旧のtruthとhistoryを混在させない。
+            timeline = nextTimeline;
+            history = nextHistory;
+            notifySnapshotChange(revision);
         } catch (error) {
             if (disposed || revision !== truthRevision) return;
-            history = { current: null, past: [], future: [] };
+            timeline = nextTimeline;
+            history = createEmptyHistory();
             if (error instanceof RangeError) {
                 logger.warn('subtitle history input rejected', { error });
                 notifySnapshotChange(revision);
@@ -215,21 +230,27 @@ export const createSubtitleSession = (
         }
     };
 
+    /** 保持済みtruthから分類だけを更新し、現在字幕のためのsource再走査は行わない。 */
+    const refreshHistory = (): void => {
+        if (disposed) return;
+        publishHistory(timeline, ++truthRevision);
+    };
+
     /** source 更新だけで cue を取得する。入力違反時は古い truth を残さない。 */
     const rebuildTruth = (): void => {
         if (disposed || source === null) return;
         const activeSource = source;
         const revision = ++truthRevision;
         let building = false;
-        let nextBlocks: SubtitleBlock[];
+        let nextTimeline: SubtitleTimeline;
         try {
             const snapshot = activeSource.getSnapshot();
             building = true;
-            nextBlocks = buildSubtitleBlocks(snapshot.primaryCues, snapshot.secondaryCues);
+            nextTimeline = buildSubtitleTimeline(snapshot.primaryCues, snapshot.secondaryCues);
         } catch (error) {
             if (disposed || revision !== truthRevision || source !== activeSource) return;
-            blocks = [];
-            history = { current: null, past: [], future: [] };
+            timeline = createEmptyTimeline();
+            history = createEmptyHistory();
             if (building && error instanceof RangeError) {
                 logger.warn('subtitle truth input rejected', { error });
                 notifySnapshotChange(revision);
@@ -240,8 +261,7 @@ export const createSubtitleSession = (
             throw error;
         }
         if (disposed || revision !== truthRevision || source !== activeSource) return;
-        blocks = nextBlocks;
-        refreshHistory();
+        publishHistory(nextTimeline, revision);
     };
 
     /**
@@ -690,8 +710,8 @@ export const createSubtitleSession = (
         snapshotListeners.clear();
         pendingResolutionReason = null;
         truthRevision += 1;
-        blocks = [];
-        history = { current: null, past: [], future: [] };
+        timeline = createEmptyTimeline();
+        history = createEmptyHistory();
 
         try {
             bag.dispose();

@@ -54,8 +54,8 @@ DOM の selector、実測値、時系列、未確認事項はこの文書へ重�
 実装は、次の前提に従って進める。
 
 - `src/content/index.ts` は thin coordinator のまま保つ
-- 実装順は基本的に source、truth、view helper、renderer、lifecycle の依存方向に従う
-- panel 実装より先に `SubtitleBlock[]` の truth を作る
+- 実装順は基本的に source、元の字幕データ、view helper、renderer、lifecycle の依存方向に従う
+- panel 実装より先に `SubtitleTimeline` の 元の字幕データ を作る
 - cleanup は後回しにしない
 - `src/ui/ui-state.ts` は early phase で small store として用意する
 - Apple TV+ 固有処理は、DOM 調査結果がそろってから導入する
@@ -115,7 +115,7 @@ TypeScript に不慣れでも、各 module の役割、依存、session と clea
  *
  * 拡張全体の ON/OFF と字幕 panel の開閉を含む
  * runtime UI state を small store として保持・通知する。
- * 字幕 truth や layout 計算そのものは担当しない。
+ * 元の字幕データ や layout 計算そのものは担当しない。
  * 現在の処理 session と寿命を分け、開始停止のたびに作り直さない。
  */
 ```
@@ -224,7 +224,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 2. popup UI と設定反映
 3. `ui/ui-state.ts`、`content/playback-root.ts`、`content/session-lifecycle.ts` の土台
 4. `subtitles/text-track-resolver.ts`、`subtitles/subtitle-source.ts`、両者を接続する `subtitles/subtitle-session.ts`
-5. `subtitles/subtitle-block-builder.ts`、`subtitles/subtitle-history.ts`
+5. `subtitles/subtitle-timeline.ts`、`subtitles/subtitle-history.ts`
 6. `panel/panel-host.ts`、`panel/panel-renderer.ts`
 7. `controls/on-off-toggle.ts`、`controls/panel-open-close-button.ts`、`layout/player-layout.ts`
 8. cleanup、再初期化、SPA 遷移対応
@@ -234,7 +234,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 補足:
 
 - `panel-renderer.ts` は `SubtitleHistoryView` が固まる前に着手しない
-- `player-layout.ts` は `panel-host.ts` と `ui-state.ts` の前提がないと組みにくいが、字幕 truth には依存しない
+- `player-layout.ts` は `panel-host.ts` と `ui-state.ts` の前提がないと組みにくいが、元の字幕データ には依存しない
 - `session-lifecycle.ts` は最初に土台を作るが、各フェーズで接続先を少しずつ増やす
 - `native-menu-sync.ts` は最初から前提化しない。Apple TV+ 固有の不安定要因として後段で閉じ込める
 - `subtitle-source.ts` は readiness 通過後の current video だけを受け取る
@@ -249,7 +249,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 | Phase 2 | popup UI と設定反映を通す | `popup/`、`settings/` |
 | Phase 3 | runtime UI state と playback/session/readiness の土台を作る | `ui/`、`content/`、`shared/` |
 | Phase 4 | readiness 通過後の字幕取得基盤と、再生経路への最小接続を作る | `subtitles/`、`content/`、関連テスト |
-| Phase 5 | `SubtitleBlock[]` と history 導出を作る | `subtitles/` |
+| Phase 5 | `SubtitleTimeline` と history 導出を作る | `subtitles/` |
 | Phase 6 | panel host と panel renderer を導入する | `panel/` |
 | Phase 7 | ON/OFF toggle、開閉ボタン、7:3 layout を導入する | `controls/`、`layout/` |
 | Phase 8 | restart / cleanup / SPA 遷移対応を固める | `content/`、`subtitles/`、`panel/`、`layout/`、`controls/` |
@@ -380,7 +380,7 @@ obvious な処理を行単位で説明するコメントは増やさない。
 - 少なくとも次を定義する
   - `ExtensionSettings`
   - `SubtitleTrack`
-  - `SubtitleBlock`
+  - `TimedSubtitleText` / `SubtitleTimeline`
   - `SubtitleHistoryView`
   - `ExtensionUiState`
   - `PlayerLayoutState`
@@ -833,7 +833,7 @@ readiness 待機と retry の実装を index へ移さない。
 
 ### Phase 4 の接続範囲に含めないもの
 
-- `SubtitleBlock[]` と history
+- `SubtitleTimeline` と history
 - panel、layout、正式な ON/OFF UI
 - native menu 操作後の自動同期
 - popup 保存後の設定自動再読込
@@ -869,162 +869,88 @@ readiness 待機と retry の実装を index へ移さない。
 
 module のテスト成功だけで、entry の分岐やブラウザ上の動作を確認済みと扱わない。
 
-## Phase 5: `SubtitleBlock[]` と current / past / future 導出
+## Phase 5: 言語別timelineとpast / current / future導出
 
 ### 目的
 
-- panel 実装前に truth を完成させる
-- source と renderer の間に、安定した字幕データ層を置く
+- sourceとrendererの間に、言語別の元の字幕データの正本と読み取り専用の時刻分類を置く。
+- 入力条件・元本文保持・取得境界・cleanupを確定してから表示へ接続する。
 
 ### 触るファイル
 
-- `src/subtitles/subtitle-block-builder.ts`
-- `src/subtitles/subtitle-block-builder.test.ts`
-- `src/subtitles/subtitle-block-candidates.ts`
-- `src/subtitles/subtitle-block-candidates.test.ts`
-- `src/subtitles/subtitle-history.ts`
 - `src/shared/types.ts`
-- `src/subtitles/subtitle-source.ts`
-- `src/subtitles/subtitle-session.ts`
-- `src/subtitles/subtitle-session.test.ts`
-- `src/content/session-lifecycle.ts`
-- `src/content/session-lifecycle.test.ts`
-- `src/content/debug-subtitle-log.ts`
-- `src/content/debug-subtitle-log.test.ts`
-- `src/content/index.ts`
-- `src/content/index.test.ts`
-- 必要なら `src/shared/log.ts`
+- `src/subtitles/subtitle-timeline.ts` と同テスト
+- `src/subtitles/subtitle-history.ts` と同テスト
+- `src/subtitles/subtitle-session.ts` と同テスト
+- `src/subtitles/subtitle-source.ts` と関連テスト
+- `src/content/session-lifecycle.ts`、`src/content/debug-subtitle-log.ts`、`src/content/index.ts` と各テスト
 
 ### ファイル単位の作業内容
 
-#### `src/subtitles/subtitle-session.ts`
-
-- source 更新を builder・history へ接続し、結果の保持・取得境界・解放を所有する
-- 通常の時刻更新・seek は保持済み truth から history だけを再計算する
-- 初回bind・source更新・track切替・入力違反後の復帰・cleanupを同テストで確認する
-- 診断の取得回数と、truth 構築に必要な cue 取得・時刻読取りを区別して検証する
-- データ取得境界と例外処理・cleanup の規則は architecture の session 仕様を参照する
-
-#### 開発用の字幕データ観測
-
-- `src/content/debug-subtitle-log.ts` は lifecycle の公開取得・購読 API だけを使い、block / history の要約を既存の subtitle logger の info で出力する
-- `src/content/index.ts` は `DEBUG_SUBTITLE_SNAPSHOT_LOG` と配線だけを持ち、観測の dispose を top-level bag に登録する
-- `DEBUG_SUBTITLE_SNAPSHOT_LOG` の使用条件・無効化時期・変更後の手順は、本書の「開発用・ブラウザ確認用フラグ」に従う
-- 出力内容・観測手順は testing-checklist の「再生経路への接続の確認」を参照する
-- 同テストで無効時の購読・取得抑制、要約の重複抑制、取得失敗後の復帰、解除後の残存 callback を確認する
-- entry の同テストで接続と lifecycle より先の cleanup を確認する
-
-#### `src/content/session-lifecycle.ts`
-
-- 字幕接続のデータ取得と更新通知を、状態購読・診断観測と分離して中継する
-- 初回接続・更新・旧接続のクリア、旧 callback の無効化、通知中の停止・再開始を同テストで確認する
-- snapshot の取得範囲と解放時の動作は architecture の lifecycle API を参照する
-
-#### `src/subtitles/subtitle-block-builder.ts`
-
-- 生 cue 全件の入力検証、完全重複除去、同時刻正規化、対応づけ、block 出力の順に処理する
-- 同時刻正規化と後続評価の規則は、architecture の builder API 境界を正本とする
-- 生 cue の公開型は維持し、内部表現・変数名・コメント・同テストの意味を正規化単位へ合わせる
-- UI 向けの見た目都合ではなく、truth を返すことに集中する
-- block の時刻範囲と本文の欠損時ルールを整理する
-- 現行の `SubtitleBlock` に id / key は追加しない
-- 入力条件と対応づけの仕様は、minimal-panel-architecture の builder API 境界を正本とする
-
-#### `src/subtitles/subtitle-block-candidates.ts`
-
-- builder 内部の補助として、検証・完全重複除去・同時刻正規化済みの単位から対応候補と点数を生成する
-- 候補の採用・単位の消費・block 出力・同時刻正規化は行わない
-- 同テストで重なり率・空白率の境界、隣接条件、件数制限、元の入力位置、入力不変性を確認する
-- 内部境界と候補条件は minimal-panel-architecture の builder 仕様を参照する
-
-#### `src/subtitles/subtitle-history.ts`
-
-- `SubtitleBlock[]` と current time から、現行の共通型 `SubtitleHistorySnapshot` を返す
-- current / past / future の導出ロジックを pure に保つ
-- `SubtitleHistoryView` は既存の別名として維持し、新しい型や別名は追加しない
-- renderer が source に触れなくても済む境界を作る
+- timeline構築: architecture §17に従い、全入力を検証し、時刻・本文を言語別にコピーする。ペア候補・採点・本文結合を導入しない。
+- history: 同じtimelineから全字幕単位を3区分へ分類する。currentを1件に絞らず、元の言語内順序を維持する。
+- subtitle-session: source更新で構築と分類、時刻更新で分類のみを行い、保持結果の公開・通知・失敗時クリア・解放を所有する。
+- lifecycle: データの取得・更新を中継し、旧接続を無効化する。分類を重複実装しない。
+- 診断ログ: 公開snapshotだけから、接続状態・言語別件数・各区分の件数を要約する。本文を含む場合は共有範囲に注意し、外部送信・永続保存を追加しない。
+- entry: 設定と公開境界の配線だけを行い、データ構築・分類・描画を持たない。
 
 ### 完了条件
 
-- `SubtitleBlock[]` を生成できる
-- current / past / future を純関数ベースで導出できる
-- panel 未実装でも history をログで確認できる
-- truth 層が `TextTrack` 直読みなしで扱える
+- 言語別の元時刻・本文を保持するtimelineを生成できる。
+- 同じ字幕単位が過去・現在・未来のちょうど1区分に入り、同時に有効な全件を保持する。
+- source・video・DOMを直接読む必要のない取得境界を提供し、停止・再接続時に旧結果を残さない。
 
 ### 検証タイミング
 
-- 実装直後に typecheck、lint
-- `subtitle-block-builder.ts` と `subtitle-history.ts` の unit test を追加
-- 同時刻正規化の境界・多数件・片言語・重複・順序・本文保持を同テストで確認する
-- 単位ベースの候補点数・同点比較・消費を確認する
-- ブラウザで観測した英語3断片を固定した回帰入力で、英語全文が同時刻の別blockへ分離せずcurrentへ渡ることを確認する
-- 正規化条件外の同時刻blockと、時刻の異なる3単位以上の扱いは既存規則を維持する
-- 時刻ずれ、secondary 欠損、track 切替前後の最低限ケースを test する
-- panel 実装へ入る前に、ブラウザのログで block が組めているかを確認する
+- 構築・分類の単位テスト、session・lifecycleの接続テスト、型チェック・lintを実行する。
+- 空入力・片言語・同時刻複数件・時間の重なり・開始／終了境界・不正入力・seek相当・入力不変性を確認する。
+- ログ観測とChrome上の描画確認を区別する。
 
-## Phase 6: panel host と panel renderer
+## Phase 6: 字幕の表示ブロックとpanel接続
 
-### 目的
+### 目的と仕様の参照先
 
-- truth を右側 panel へ表示する最小描画経路を作る
-- DOM 所有と描画責務を分ける
+言語別の元字幕から会話ブロックと補助字幕を導出し、同じ構成を過去・現在・未来で表示する。現在のブロック全体を強調する。
+入力・結合・競合優先順位・母国語配置・時間範囲・例外は`minimal-panel-architecture.md` §14を正本とし、本書で別の規則を定義しない。
+既存の字幕単位historyと、表示ブロックの状態を区別する。既存APIの存在や文書の記載を実装完了の証拠にしない。
 
-### 触るファイル
+### 実装開始前の条件
 
-- `src/panel/panel-host.ts`
-- `src/panel/panel-renderer.ts`
-- `src/content/panel-session.ts` と関連テスト
-- `src/content/session-lifecycle.ts` と関連テスト
-- `src/content/index.ts` と関連テスト
-- `src/subtitles/subtitle-history.ts`
-- `src/ui/ui-state.ts`
-- `src/shared/dom.ts`
-- 必要なら `src/shared/types.ts`
+- architecture §14.10の未確定事項を解消し、具体的な期待値をtesting-checklistへ反映する。
+- 公開型・取得境界・依存方向をarchitecture §5・§6・§17・§18と利用先でそろえる。
+- 新規ファイル名は配置候補と既存ファイルを区別し、空moduleを先に作らない。
 
-### ファイル単位の作業内容
+### 実装順・対象・完了条件
 
-#### `src/panel/panel-host.ts`
+| 順序 | 対象 | 作業と完了条件 |
+|---|---|---|
+| 1 | `src/shared/types.ts`、公開型の利用先 | 元字幕・表示部分・補助字幕・ブロック・状態の境界を確定する。既存historyを別の意味へ流用しない |
+| 2 | `src/panel/subtitle-text.ts`、囲み分離の導出と同テスト | 標準WebVTT解析・ruby注釈除去を利用し、原文・時刻を保持して会話と補助の表示部分を準備する |
+| 3 | ブロック構築の導出と同テスト | 同時刻枠、母国語の候補、開始時刻・入力順の採用、再結合禁止、最大重なり配置の順で処理し、欠落・二重配置を防ぐ |
+| 4 | `src/subtitles/subtitle-history.ts`と同テスト | 元字幕の分類と区別したブロック状態を導出する。最早開始以上・最遅終了未満で全体強調する |
+| 5 | `src/subtitles/subtitle-session.ts`と同テスト | 構成・状態を同じ世代で公開し、コピー保護・通知・再入・失敗時クリア・解放を検証する |
+| 6 | `src/content/session-lifecycle.ts`、`src/content/debug-subtitle-log.ts`と各テスト | データ取得・更新の中継と診断を新しい公開境界へ合わせる。診断に導出処理を依存させない |
+| 7 | `src/content/panel-session.ts`、`src/panel/panel-renderer.ts`、`src/panel/panel-host.ts`と各テスト | 購読・UI state・DOM所有を維持して描画する。rendererに結合・分離・時刻判定を持ち込まない |
+| 8 | `src/content/index.ts`と同テスト、実機 | 配線と最終cleanupを確認する。全体回帰検証後にChromeで初回表示・更新・seek・停止・再接続を確認する |
 
-- panel host DOM の生成、mount、unmount を実装する
-- panel DOM の owner をここに限定する
-- renderer が差し込みやすい最小の DOM 構造を返す
+囲み分離の配置候補は`src/subtitles/subtitle-text-parts.ts`、ブロック構築の候補は`src/subtitles/subtitle-display-blocks.ts`とする。採用前に本文準備との依存方向を確認し、architectureのmodule構成とAPIへ反映する。これらを実装済みのファイルとして扱わない。
 
-#### `src/panel/panel-renderer.ts`
+### 更新とcleanup
 
-- `SubtitleHistoryView` を受けて current / past / future を描画する
-- source や `TextTrack` は直接読まない
-- 初期版では DOM 差分最適化よりも責務明確化を優先する
-- 空状態や未取得状態の最小表示もここで扱う
+source更新では元データ・表示部分・ブロック構成・状態を再導出する。時刻だけの更新とseekでは構築済みブロックの状態だけを更新する。取得のための再bind・source再走査・restartは追加しない。
+現在だけブロック、過去未来だけ言語別一覧という二重表示を完成形にしない。会話ブロックと補助字幕は同じ元データ世代から公開する。
+各listener・timer・observer・購読・DOM・派生結果のownerを固定し、停止後の旧更新が新しい接続へ到達しないことを確認する。panel closeで字幕接続を破棄しない。
+初期化失敗とcleanup失敗を区別し、解除試行を成功とみなさない。既存のコピー保護・再入・通知中の停止・再開始のテストを維持する。
 
-#### `src/content/panel-session.ts`
+### 検証と完了条件
 
-- architecture の責務・API 境界に従い、host / renderer と字幕データ境界・既存 UI store を接続する
-- 単体で初回取得・更新購読・表示切替・再入・失敗時 cleanup を検証してから、lifecycle へ組み込む
-- snapshot・UI state を正本として複製保持せず、truth / history の再構築を重複実装しない
-
-#### 接続側: `session-lifecycle.ts` / `index.ts`
-
-- lifecycle が処理 session ごとに panel 接続を生成し、停止・再開始・最終 dispose 時に解放する
-- readiness retry ごとに panel 接続を生成せず、旧購読・旧 DOM を次 session へ持ち越さない
-- index は既存 UI store の受渡しなどの配線だけを行い、接続処理・cleanup 本体を持たない
-- 単体検証と再生経路への接続検証を分け、後者で待機から字幕表示への更新と停止時解放を確認する
-- mount 候補は DOM 正本文書と現在の実画面で確認し、selector の存在だけで採用確定としない
-
-### 完了条件
-
-- panel host が mount / unmount できる
-- `SubtitleHistoryView` を panel に表示できる
-- renderer が source を直接読んでいない
-- session stop で panel DOM を確実に外せる
-
-### 検証タイミング
-
-- 実装直後に typecheck、lint
-- renderer の pure な整形部があれば unit test を追加
-- panel 接続の自動テストは testing-checklist の「panel 接続の自動テスト」に従う
-- lifecycle 組込み後は初回表示・更新・停止・再接続の接続テストと全体回帰検証を行う
-- Apple TV+ 実画面で panel が最小表示できることを確認する
-- この時点では 7:3 layout 未導入でもよい
+- 各単位で`npm run check`・`npm run lint`・対象テスト、接続変更後に`npm test`を実行する。
+- `testing-checklist.md`の「表示ブロックと補助字幕の検証」に従い、固定例・競合・境界・例外・世代・cleanupを確認する。
+- buildは生成先distを削除して再生成するため実行許可を確認する。拡張とApple TV+ページを再読み込みしてChrome確認を行う。
+- 英語2件・日本語3件の同じ枠を48.09800833333331秒以上52.01037777777778秒未満で全体強調し、内部の空白でも途切れないことを確認する。
+- 囲み字幕の分離、過去・未来の保持、前後seek、接続失敗、停止・再接続後の旧DOM・購読遮断を確認する。自動追従は別に確認範囲を記録する。
+- 不要な旧builder・候補生成・型・import・テストの削除は参照先を確認し、明示的な削除承認後の別作業とする。
+- 7:3レイアウトと正式な操作UIはPhase 7で扱う。検証結果・未観測・実装途中の状態を、製品仕様そのものと混同しない。
 
 ## Phase 7: ON/OFF toggle、開閉ボタン、layout 適用
 
@@ -1260,7 +1186,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - `src/ui/ui-state.ts`
 - `src/content/session-lifecycle.ts`
 - `src/subtitles/text-track-resolver.ts`
-- `src/subtitles/subtitle-block-builder.ts`
+- `src/subtitles/subtitle-timeline.ts`
 - `src/subtitles/subtitle-history.ts`
 - `src/layout/player-layout.ts`
 - `src/shared/` 配下
@@ -1351,7 +1277,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 - source と renderer の直結を作らない
 - runtime state を `chrome.storage.sync` に逃がさない
 - owner 不明の listener / observer / timer を作らない
-- panel 実装前に truth の shape を安定させる
+- panel 実装前に 元の字幕データ の shape を安定させる
 - cleanup 実装前に start 処理を広げすぎない
 - Apple TV+ 固有 workaround は Phase 9 より前で増やしすぎない
 - `textTracks.length === 0` を source 側の失敗として扱わない
@@ -1362,7 +1288,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 次のいずれかが起きた場合は、実装を進める前に共通設計前提の見直しが必要か判断する。
 
-1. `SubtitleBlock` の shape を変えないと truth を表現できない
+1. `SubtitleTimeline` のshape を変えないと 元の字幕データ を表現できない
 2. `ExtensionUiState` や `PlayerLayoutState` の責務境界が現実に合わない
 3. `playback-root.ts` で想定していた注入先や基準領域が Apple TV+ 実画面で成立しない
 4. `TextTrack` の実観測結果が、resolver 前提を大きく崩す

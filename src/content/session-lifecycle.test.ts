@@ -20,6 +20,17 @@ vi.mock('../subtitles/subtitle-session', () => ({
 
 const createSubtitleSessionMock = vi.mocked(createSubtitleSession);
 
+/** @returns 各言語の入力がない状態を表す独立した空配列。 */
+const emptyTimeline = () => ({ primary: [], secondary: [] });
+
+/** @returns 3区分とも字幕を持たない期待値。 */
+const emptyHistory = () => ({ past: emptyTimeline(), current: emptyTimeline(), future: emptyTimeline() });
+
+/** @returns 接続中で字幕を持たない期待値。接続なしのnullとは区別する。 */
+const emptySnapshot = () => ({ timeline: emptyTimeline(), history: emptyHistory() });
+
+
+
 /**
  * readiness 判定用の track 数を video に設定する。
  *
@@ -123,7 +134,7 @@ const observeCleanupErrors = () =>
 
 beforeEach(() => {
   createSubtitleSessionMock.mockReset();
-  createSubtitleSessionMock.mockImplementation(() => ({ dispose: vi.fn(), getSnapshot: () => ({ blocks: [], history: { current: null, past: [], future: [] } }), subscribe: () => () => {} }));
+  createSubtitleSessionMock.mockImplementation(() => ({ dispose: vi.fn(), getSnapshot: () => (emptySnapshot()), subscribe: () => () => {} }));
 });
 
 afterEach(() => {
@@ -404,7 +415,7 @@ describe('session-lifecycle の字幕接続の委譲', () => {
     (method) => {
       const target = createTarget(1);
       const dispose = vi.fn();
-      createSubtitleSessionMock.mockReturnValue({ dispose, getSnapshot: () => ({ blocks: [], history: { current: null, past: [], future: [] } }), subscribe: () => () => {} });
+      createSubtitleSessionMock.mockReturnValue({ dispose, getSnapshot: () => (emptySnapshot()), subscribe: () => () => {} });
       const lifecycle = createSessionLifecycle({ doc: document, subtitle });
       try {
         lifecycle.start(target);
@@ -423,7 +434,7 @@ describe('session-lifecycle の字幕接続の委譲', () => {
     const operations: string[] = [];
     createSubtitleSessionMock.mockImplementation(() => {
       operations.push('start');
-      return { dispose: () => { operations.push('dispose'); }, getSnapshot: () => ({ blocks: [], history: { current: null, past: [], future: [] } }), subscribe: () => () => {} };
+      return { dispose: () => { operations.push('dispose'); }, getSnapshot: () => (emptySnapshot()), subscribe: () => () => {} };
     });
     const lifecycle = createSessionLifecycle({ doc: document, subtitle });
     try {
@@ -439,7 +450,7 @@ describe('session-lifecycle の字幕接続の委譲', () => {
     const target = createTarget(1);
     const errorLog = observeCleanupErrors();
     const dispose = vi.fn(() => { throw new Error('cleanup failed'); });
-    createSubtitleSessionMock.mockReturnValue({ dispose, getSnapshot: () => ({ blocks: [], history: { current: null, past: [], future: [] } }), subscribe: () => () => {} });
+    createSubtitleSessionMock.mockReturnValue({ dispose, getSnapshot: () => (emptySnapshot()), subscribe: () => () => {} });
     const lifecycle = createSessionLifecycle({ doc: document, subtitle });
     try {
       lifecycle.start(target);
@@ -555,8 +566,8 @@ const createSubtitleDataMock = (text = 'subtitle') => {
   const unsubscribe = vi.fn(() => { operations.push('unsubscribe'); });
   const dispose = vi.fn(() => { operations.push('dispose'); });
   const getSnapshot = vi.fn((): SubtitleSessionSnapshot => {
-    const block = { startTime: 1, endTime: 2, primaryText: text, secondaryText: null };
-    return { blocks: [block], history: { current: block, past: [], future: [] } };
+    const timeline = { primary: [{ startTime: 1, endTime: 2, text }], secondary: [] };
+    return { timeline, history: { past: emptyTimeline(), current: timeline, future: emptyTimeline() } };
   });
   const subscribe = vi.fn((listener: () => void): DisposeFn => {
     callback = listener;
@@ -603,7 +614,7 @@ describe('session-lifecycle の字幕データ境界', () => {
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener).toHaveBeenCalledWith();
       expect(data.getSnapshot).not.toHaveBeenCalled();
-      expect(lifecycle.getSubtitleSnapshot()?.history.current?.primaryText).toBe('subtitle');
+      expect(lifecycle.getSubtitleSnapshot()?.history.current.primary[0]?.text).toBe('subtitle');
       expect(data.getSnapshot).toHaveBeenCalledTimes(1);
       data.getSnapshot.mockClear();
       stateListener.mockClear();
@@ -616,7 +627,7 @@ describe('session-lifecycle の字幕データ境界', () => {
 
   it('ready到達まで接続せず、接続の空snapshotと接続なしのnullを区別する', () => {
     const data = createSubtitleDataMock();
-    data.getSnapshot.mockReturnValue({ blocks: [], history: { current: null, past: [], future: [] } });
+    data.getSnapshot.mockReturnValue(emptySnapshot());
     createSubtitleSessionMock.mockReturnValue(data.session);
     const scheduler = createRetryScheduler();
     const lifecycle = createSessionLifecycle({ doc: document, subtitle, scheduleRetry: scheduler.schedule });
@@ -630,7 +641,7 @@ describe('session-lifecycle の字幕データ境界', () => {
       setTrackCount(target.videoEl, 1);
       scheduler.fire();
       expect(listener).toHaveBeenCalledTimes(1);
-      expect(lifecycle.getSubtitleSnapshot()).toEqual({ blocks: [], history: { current: null, past: [], future: [] } });
+      expect(lifecycle.getSubtitleSnapshot()).toEqual(emptySnapshot());
       lifecycle.stop();
       expect(lifecycle.getSubtitleSnapshot()).toBeNull();
     } finally { lifecycle.dispose(); }
@@ -675,7 +686,7 @@ describe('session-lifecycle の字幕データ境界', () => {
     const lifecycle = createSessionLifecycle({ doc: document, subtitle });
     const results: Array<string | null> = [];
     try {
-      lifecycle.subscribeSubtitle(() => { results.push(lifecycle.getSubtitleSnapshot()?.history.current?.primaryText ?? null); });
+      lifecycle.subscribeSubtitle(() => { results.push(lifecycle.getSubtitleSnapshot()?.history.current.primary[0]?.text ?? null); });
       const target = createTarget(1);
       lifecycle.start(target);
       lifecycle.start(target, 'manual-restart');
@@ -785,7 +796,7 @@ describe('session-lifecycle の字幕データ境界', () => {
       lifecycle.start(target, 'manual-restart');
       expect(createSubtitleSessionMock).toHaveBeenCalledTimes(2);
       expect(lifecycle.getState().reason).toBe('video-replaced');
-      expect(lifecycle.getSubtitleSnapshot()?.history.current?.primaryText).toBe('second');
+      expect(lifecycle.getSubtitleSnapshot()?.history.current.primary[0]?.text).toBe('second');
       expect(second.dispose).not.toHaveBeenCalled();
     } finally { lifecycle.dispose(); }
   });
@@ -879,7 +890,7 @@ describe('session-lifecycle の停止後参照', () => {
         const nextTarget = createTarget(1);
         lifecycle.start(nextTarget);
         expect(lifecycle.getState().target).toBe(nextTarget);
-        expect(lifecycle.getSubtitleSnapshot()?.history.current?.primaryText).toBe('second');
+        expect(lifecycle.getSubtitleSnapshot()?.history.current.primary[0]?.text).toBe('second');
         expect(states).toHaveBeenCalledTimes(1);
         expect(updates).toHaveBeenCalledTimes(1);
         first.fire();

@@ -30,15 +30,16 @@ export const attachSubtitleSnapshotLog = (
       const snapshot = lifecycle.getSubtitleSnapshot();
       const summary = JSON.stringify(snapshot === null ? { connected: false } : {
         connected: true,
-        blockCount: snapshot.blocks.length,
-        firstBlock: snapshot.blocks[0] ?? null,
-        lastBlock: snapshot.blocks.at(-1) ?? null,
+        timelineCount: { primary: snapshot.timeline.primary.length, secondary: snapshot.timeline.secondary.length },
+        first: { primary: snapshot.timeline.primary[0] ?? null, secondary: snapshot.timeline.secondary[0] ?? null },
+        last: { primary: snapshot.timeline.primary.at(-1) ?? null, secondary: snapshot.timeline.secondary.at(-1) ?? null },
         current: snapshot.history.current,
-        pastCount: snapshot.history.past.length,
-        futureCount: snapshot.history.future.length,
-        previous: snapshot.history.past.at(-1) ?? null,
-        next: snapshot.history.future[0] ?? null,
+        pastCount: { primary: snapshot.history.past.primary.length, secondary: snapshot.history.past.secondary.length },
+        futureCount: { primary: snapshot.history.future.primary.length, secondary: snapshot.history.future.secondary.length },
+        previous: { primary: snapshot.history.past.primary.at(-1) ?? null, secondary: snapshot.history.past.secondary.at(-1) ?? null },
+        next: { primary: snapshot.history.future.primary[0] ?? null, secondary: snapshot.history.future.secondary[0] ?? null },
       });
+
       if (disposed || summary === lastSummary) return;
       logger.info('subtitle snapshot', { summary });
       lastSummary = summary;
