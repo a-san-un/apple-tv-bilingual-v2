@@ -142,6 +142,54 @@ export type SubtitleHistorySnapshot = Readonly<{
 export type SubtitleHistoryView = SubtitleHistorySnapshot;
 
 /**
+ * 表示用本文と、同じ世代のtimelineの所属言語配列における元入力位置。
+ * sourceIndexは補助分類後に振り直さず、永続IDとして使わない。
+ */
+export type SubtitleDisplayItem = Readonly<{
+  sourceIndex: number;
+  text: string;
+}>;
+
+/**
+ * セリフ・補助に共通の表示枠。各言語の表示要素は元入力順で保持する。
+ * 両言語が空の枠は作らず、補助枠は片言語1要素と他言語の空配列で表す。
+ */
+export type SubtitleDisplayBlock = Readonly<{
+  kind: 'dialogue' | 'auxiliary';
+  startTime: number;
+  endTime: number;
+  primary: readonly SubtitleDisplayItem[];
+  secondary: readonly SubtitleDisplayItem[];
+}>;
+
+/** 表示枠単位の過去・現在・未来。元字幕単位のhistoryとは区別する。 */
+export type SubtitleDisplayHistory = Readonly<{
+  past: readonly SubtitleDisplayBlock[];
+  current: readonly SubtitleDisplayBlock[];
+  future: readonly SubtitleDisplayBlock[];
+}>;
+
+/**
+ * 表示結果を正常・不正時刻・利用不能に分けた読み取り値。
+ * 不正時刻では枠構成を保持し、利用不能では失敗理由だけを持つ。
+ * readonlyは実行時のコピー保護を保証しない。
+ */
+export type SubtitleDisplaySnapshot =
+  | Readonly<{
+      status: 'ready';
+      blocks: readonly SubtitleDisplayBlock[];
+      history: SubtitleDisplayHistory;
+    }>
+  | Readonly<{
+      status: 'invalid-time';
+      blocks: readonly SubtitleDisplayBlock[];
+    }>
+  | Readonly<{
+      status: 'unavailable';
+      reason: 'timeline-failed' | 'display-failed';
+    }>;
+
+/**
  * runtime 上の UI 意思だけを表す state。
  * 保存設定とは分離し、Chrome Storage には保存しない。
  */
