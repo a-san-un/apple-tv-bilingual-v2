@@ -63,6 +63,8 @@ describe('字幕snapshotログ', () => {
       f.set(data); f.fire();
       expect(f.logger.info).toHaveBeenLastCalledWith('subtitle snapshot', { summary: JSON.stringify({
         connected: true,
+        generation: 1,
+        updateReason: 'source',
         timelineCount: { primary: 2, secondary: 2 },
         first: { primary: data.timeline.primary[0], secondary: data.timeline.secondary[0] },
         last: { primary: data.timeline.primary[1], secondary: data.timeline.secondary[1] },
@@ -136,5 +138,38 @@ describe('字幕snapshotログ', () => {
     f.lifecycle.getSubtitleSnapshot.mockClear(); f.fire();
     expect(f.unsubscribe).toHaveBeenCalledTimes(1);
     expect(f.lifecycle.getSubtitleSnapshot).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('字幕snapshotログの世代情報', () => {
+  it.each([
+    ['generation', 2, 'source'],
+    ['time', 1, 'time'],
+    ['seek', 1, 'seek'],
+  ] as const)('%sだけの変化も出力し、同じ要約の再通知は抑制する', (_label, generation, updateReason) => {
+    const f = fixture();
+    const initial = snapshot();
+    f.set(initial);
+    const observer = attachSubtitleSnapshotLog(f.lifecycle, true, f.logger);
+    try {
+      expect(f.logger.info).toHaveBeenCalledTimes(1);
+      const initialCall = f.logger.info.mock.calls[0];
+      if (initialCall === undefined) throw new Error('Expected initial log');
+      const initialSummary = JSON.parse(initialCall[1].summary);
+      expect(initialSummary).toMatchObject({ connected: true, generation: 1, updateReason: 'source' });
+      const next: SubtitleSessionSnapshot = { ...initial, generation, updateReason };
+      f.set(next);
+      f.fire();
+      expect(f.logger.info).toHaveBeenCalledTimes(2);
+      const nextCall = f.logger.info.mock.calls[1];
+      if (nextCall === undefined) throw new Error('Expected updated log');
+      expect(nextCall[0]).toBe('subtitle snapshot');
+      expect(JSON.parse(nextCall[1].summary)).toEqual({ ...initialSummary, generation, updateReason });
+      f.set({ ...next });
+      f.fire();
+      expect(f.logger.info).toHaveBeenCalledTimes(2);
+      expect(f.logger.error).not.toHaveBeenCalled();
+    } finally { observer.dispose(); }
   });
 });

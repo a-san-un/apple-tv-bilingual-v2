@@ -30,6 +30,8 @@ export const attachSubtitleSnapshotLog = (
       const snapshot = lifecycle.getSubtitleSnapshot();
       const summary = JSON.stringify(snapshot === null ? { connected: false } : {
         connected: true,
+        generation: snapshot.generation,
+        updateReason: snapshot.updateReason,
         timelineCount: { primary: snapshot.timeline.primary.length, secondary: snapshot.timeline.secondary.length },
         first: { primary: snapshot.timeline.primary[0] ?? null, secondary: snapshot.timeline.secondary[0] ?? null },
         last: { primary: snapshot.timeline.primary.at(-1) ?? null, secondary: snapshot.timeline.secondary.at(-1) ?? null },

@@ -581,6 +581,111 @@ const createSubtitleDataMock = (text = 'subtitle') => {
   };
 };
 
+/** 新snapshotを加工せず中継し、通知と取得の責務を分離する。 */
+describe('session-lifecycle の世代付きsnapshot中継', () => {
+  const subtitle = { settings: { primaryLang: 'en', secondaryLang: 'ja' } };
+
+  it('非空snapshot全体と内部参照を再コピーせず、取得時だけ委譲する', () => {
+    const data = createSubtitleDataMock();
+    const expected = data.getSnapshot();
+    data.getSnapshot.mockReturnValue(expected).mockClear();
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const listener = vi.fn();
+    try {
+      lifecycle.subscribeSubtitle(listener);
+      expect(listener).not.toHaveBeenCalled();
+      lifecycle.start(createTarget(1));
+      expect(listener.mock.calls).toEqual([[]]);
+      expect(data.getSnapshot).not.toHaveBeenCalled();
+      const actual = lifecycle.getSubtitleSnapshot();
+      expect(actual).toBe(expected);
+      expect(actual?.timeline).toBe(expected.timeline);
+      expect(actual?.history).toBe(expected.history);
+      expect(actual?.display).toBe(expected.display);
+      expect(actual?.generation).toBe(1);
+      expect(actual?.updateReason).toBe('source');
+      expect(data.getSnapshot).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally { lifecycle.dispose(); }
+  });
+
+  it.each(['source', 'time', 'seek'] as const)('%s更新の世代と理由を変更せず、通知時は取得しない', (reason) => {
+    const data = createSubtitleDataMock();
+    const initial = data.getSnapshot();
+    const next: SubtitleSessionSnapshot = {
+      ...initial, generation: reason === 'source' ? 2 : 1, updateReason: reason,
+    };
+    data.getSnapshot.mockReturnValue(initial).mockClear();
+    createSubtitleSessionMock.mockReturnValue(data.session);
+    const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+    const listener = vi.fn();
+    try {
+      lifecycle.subscribeSubtitle(listener);
+      lifecycle.start(createTarget(1));
+      expect(lifecycle.getSubtitleSnapshot()).toBe(initial);
+      data.getSnapshot.mockReturnValue(next).mockClear();
+      listener.mockClear();
+      data.fire();
+      expect(listener.mock.calls).toEqual([[]]);
+      expect(data.getSnapshot).not.toHaveBeenCalled();
+      const actual = lifecycle.getSubtitleSnapshot();
+      expect(actual).toBe(next);
+      expect(actual?.generation).toBe(reason === 'source' ? 2 : 1);
+      expect(actual?.updateReason).toBe(reason);
+      expect(data.getSnapshot).toHaveBeenCalledTimes(1);
+      expect(createSubtitleSessionMock).toHaveBeenCalledTimes(1);
+      expect(data.subscribe).toHaveBeenCalledTimes(1);
+    } finally { lifecycle.dispose(); }
+  });
+
+  it.each(['ready', 'invalid-time', 'timeline-failed', 'display-failed'] as const)(
+    'display=%sを接続なしへ変換せず、後続の正常snapshotもそのまま返す', (status) => {
+      const data = createSubtitleDataMock();
+      const initial = data.getSnapshot();
+      if (initial.display.status !== 'ready') throw new Error('Expected ready fixture');
+      let next: SubtitleSessionSnapshot;
+      if (status === 'ready') {
+        next = { ...initial, generation: 2 };
+      } else if (status === 'invalid-time') {
+        next = { ...initial, updateReason: 'time', history: emptyHistory(), display: { status: 'invalid-time', blocks: initial.display.blocks } };
+      } else {
+        next = {
+          ...initial, generation: 2,
+          timeline: status === 'timeline-failed' ? emptyTimeline() : initial.timeline,
+          history: status === 'timeline-failed' ? emptyHistory() : initial.history,
+          display: { status: 'unavailable', reason: status },
+        };
+      }
+      const recovered: SubtitleSessionSnapshot = { ...initial, generation: 3 };
+      data.getSnapshot.mockReturnValue(initial).mockClear();
+      createSubtitleSessionMock.mockReturnValue(data.session);
+      const lifecycle = createSessionLifecycle({ doc: document, subtitle });
+      const listener = vi.fn();
+      try {
+        lifecycle.subscribeSubtitle(listener);
+        lifecycle.start(createTarget(1));
+        expect(data.getSnapshot).not.toHaveBeenCalled();
+        for (const expected of [next, recovered]) {
+          data.getSnapshot.mockReturnValue(expected).mockClear();
+          listener.mockClear();
+          data.fire();
+          expect(listener.mock.calls).toEqual([[]]);
+          expect(data.getSnapshot).not.toHaveBeenCalled();
+          const actual = lifecycle.getSubtitleSnapshot();
+          expect(actual).toBe(expected);
+          expect(actual?.display).toBe(expected.display);
+          expect(actual?.timeline).toBe(expected.timeline);
+          expect(actual?.history).toBe(expected.history);
+          expect(data.getSnapshot).toHaveBeenCalledTimes(1);
+        }
+        lifecycle.stop();
+        expect(lifecycle.getSubtitleSnapshot()).toBeNull();
+      } finally { lifecycle.dispose(); }
+    },
+  );
+});
+
 describe('session-lifecycle の字幕データ境界', () => {
   const subtitle = { settings: { primaryLang: 'en', secondaryLang: 'ja' } };
 
