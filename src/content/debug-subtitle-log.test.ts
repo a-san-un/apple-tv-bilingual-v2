@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { attachSubtitleSnapshotLog } from './debug-subtitle-log';
-import { deriveSubtitleHistory } from '../subtitles/subtitle-history';
+import { deriveSubtitleHistory, deriveSubtitleDisplayHistory } from '../subtitles/subtitle-history';
 import type { SubtitleSessionSnapshot } from '../subtitles/subtitle-session';
 
 /** @returns 解除後のcallbackも発火できる観測fixture。 */
@@ -26,7 +26,7 @@ const fixture = () => {
 const emptyTimeline = () => ({ primary: [], secondary: [] });
 
 /** @returns 字幕を持たない接続中snapshot。 */
-const emptySnapshot = (): SubtitleSessionSnapshot => ({ timeline: emptyTimeline(), history: { past: emptyTimeline(), current: emptyTimeline(), future: emptyTimeline() } });
+const emptySnapshot = (): SubtitleSessionSnapshot => ({ generation: 1, updateReason: 'source', display: { status: 'ready', blocks: [], history: { past: [], current: [], future: [] } }, timeline: emptyTimeline(), history: { past: emptyTimeline(), current: emptyTimeline(), future: emptyTimeline() } });
 
 /** @returns 元時刻と本文を持つ両言語timelineと、1.5秒で分類したhistory。 */
 const snapshot = (): SubtitleSessionSnapshot => {
@@ -34,7 +34,12 @@ const snapshot = (): SubtitleSessionSnapshot => {
     primary: [{ startTime: 0, endTime: 1, text: 'previous' }, { startTime: 1, endTime: 2, text: 'current' }],
     secondary: [{ startTime: 1, endTime: 2, text: '現在' }, { startTime: 2, endTime: 3, text: '次' }],
   };
-  return { timeline, history: deriveSubtitleHistory(timeline, 1.5) };
+  const blocks = [
+    { kind: 'dialogue' as const, startTime: 0, endTime: 1, primary: [{ sourceIndex: 0, text: 'previous' }], secondary: [] },
+    { kind: 'dialogue' as const, startTime: 1, endTime: 2, primary: [{ sourceIndex: 1, text: 'current' }], secondary: [{ sourceIndex: 0, text: '現在' }] },
+    { kind: 'dialogue' as const, startTime: 2, endTime: 3, primary: [], secondary: [{ sourceIndex: 1, text: '次' }] },
+  ];
+  return { generation: 1, updateReason: 'source', display: { status: 'ready', blocks, history: deriveSubtitleDisplayHistory(blocks, 1.5) }, timeline, history: deriveSubtitleHistory(timeline, 1.5) };
 };
 
 describe('字幕snapshotログ', () => {
@@ -75,8 +80,9 @@ describe('字幕snapshotログ', () => {
     f.set(snapshot());
     const observer = attachSubtitleSnapshotLog(f.lifecycle, true, f.logger);
     try {
-      const data = snapshot();
-      data.history = deriveSubtitleHistory(data.timeline, 0);
+      const initial = snapshot();
+      if (initial.display.status !== 'ready') throw new Error('Expected ready fixture');
+      const data = { ...initial, history: deriveSubtitleHistory(initial.timeline, 0), display: { ...initial.display, history: deriveSubtitleDisplayHistory(initial.display.blocks, 0) } };
       f.set(data); f.fire();
       expect(f.logger.info).toHaveBeenCalledTimes(2);
       f.set(emptySnapshot()); f.fire();

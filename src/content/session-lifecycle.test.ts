@@ -27,7 +27,7 @@ const emptyTimeline = () => ({ primary: [], secondary: [] });
 const emptyHistory = () => ({ past: emptyTimeline(), current: emptyTimeline(), future: emptyTimeline() });
 
 /** @returns 接続中で字幕を持たない期待値。接続なしのnullとは区別する。 */
-const emptySnapshot = () => ({ timeline: emptyTimeline(), history: emptyHistory() });
+const emptySnapshot = (): SubtitleSessionSnapshot => ({ generation: 1, updateReason: 'source', display: { status: 'ready', blocks: [], history: { past: [], current: [], future: [] } }, timeline: emptyTimeline(), history: emptyHistory() });
 
 
 
@@ -567,7 +567,8 @@ const createSubtitleDataMock = (text = 'subtitle') => {
   const dispose = vi.fn(() => { operations.push('dispose'); });
   const getSnapshot = vi.fn((): SubtitleSessionSnapshot => {
     const timeline = { primary: [{ startTime: 1, endTime: 2, text }], secondary: [] };
-    return { timeline, history: { past: emptyTimeline(), current: timeline, future: emptyTimeline() } };
+    const blocks = [{ kind: 'dialogue' as const, startTime: 1, endTime: 2, primary: [{ sourceIndex: 0, text }], secondary: [] }];
+    return { generation: 1, updateReason: 'source', display: { status: 'ready', blocks, history: { past: [], current: blocks, future: [] } }, timeline, history: { past: emptyTimeline(), current: timeline, future: emptyTimeline() } };
   });
   const subscribe = vi.fn((listener: () => void): DisposeFn => {
     callback = listener;

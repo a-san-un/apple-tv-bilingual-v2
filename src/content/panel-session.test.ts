@@ -21,7 +21,7 @@ const emptyTimeline = () => ({ primary: [], secondary: [] });
 const emptyHistory = () => ({ past: emptyTimeline(), current: emptyTimeline(), future: emptyTimeline() });
 
 /** @returns 接続中で字幕を持たない期待値。接続なしのnullとは区別する。 */
-const emptySnapshot = () => ({ timeline: emptyTimeline(), history: emptyHistory() });
+const emptySnapshot = (): SubtitleSessionSnapshot => ({ generation: 1, updateReason: 'source', display: { status: 'ready', blocks: [], history: { past: [], current: [], future: [] } }, timeline: emptyTimeline(), history: emptyHistory() });
 
 
 
@@ -32,7 +32,8 @@ const emptySnapshot = () => ({ timeline: emptyTimeline(), history: emptyHistory(
  */
 const snapshot = (text: string): SubtitleSessionSnapshot => {
   const timeline = { primary: [{ startTime: 0, endTime: 1, text }], secondary: [{ startTime: 0, endTime: 1, text: '訳' }] };
-  return { timeline, history: { past: emptyTimeline(), current: timeline, future: emptyTimeline() } };
+  const blocks = [{ kind: 'dialogue' as const, startTime: 0, endTime: 1, primary: [{ sourceIndex: 0, text }], secondary: [{ sourceIndex: 0, text: '訳' }] }];
+  return { generation: 1, updateReason: 'source', display: { status: 'ready', blocks, history: { past: [], current: blocks, future: [] } }, timeline, history: { past: emptyTimeline(), current: timeline, future: emptyTimeline() } };
 };
 
 /**
@@ -143,8 +144,9 @@ describe('panel-session', /** 接続契約のケースを登録する。 */ () =
     f.getSubtitleSnapshot.mockReturnValue(emptySnapshot());
     f.subtitles.fire();
     expect(f.mount.textContent).toBe('表示できる字幕はありません');
-    const next = snapshot('future');
-    next.history = { past: emptyTimeline(), current: emptyTimeline(), future: next.timeline };
+    const initial = snapshot('future');
+    if (initial.display.status !== 'ready') throw new Error('Expected ready fixture');
+    const next = { ...initial, history: { past: emptyTimeline(), current: emptyTimeline(), future: initial.timeline }, display: { ...initial.display, history: { past: [], current: [], future: initial.display.blocks } } };
     const before = JSON.stringify(next);
     f.getSubtitleSnapshot.mockReturnValue(next);
     f.subtitles.fire();

@@ -16,6 +16,9 @@ import {
 import type { ReadySettings } from '../settings/settings-store';
 import * as trackResolver from './text-track-resolver';
 import * as timelineBuilder from './subtitle-timeline';
+import * as displayBuilder from './subtitle-display-blocks';
+import * as textConverter from '../panel/subtitle-text';
+import * as textPreparation from './subtitle-text-parts';
 
 /** listener を手動発火し、実際の残存数を確認できる track。 */
 type FakeTrack = TextTrack & {
@@ -1802,16 +1805,17 @@ const emptyTimeline = () => ({ primary: [], secondary: [] });
 const emptyHistory = () => ({ past: emptyTimeline(), current: emptyTimeline(), future: emptyTimeline() });
 
 /** @returns 接続中で字幕を持たない期待値。接続なしのnullとは区別する。 */
-const emptySnapshot = () => ({ timeline: emptyTimeline(), history: emptyHistory() });
+const emptySnapshot = () => ({ generation: 2, updateReason: 'source', display: { status: 'unavailable', reason: 'timeline-failed' }, timeline: emptyTimeline(), history: emptyHistory() });
 
 /**
  * 初回fixtureの既知の元時刻・本文を持つ期待snapshotを作る。
  * @param period 全字幕を置く既知の区分。初回1.5秒はcurrent、0秒はfuture。
  * @returns 独立した期待timelineと区分配列。
  */
-const initialSnapshot = (period: 'current' | 'future' = 'current') => {
+const initialSnapshot = (period: 'current' | 'future' = 'current', updateReason = period === 'current' ? 'source' : 'time') => {
     const timeline = { primary: [{ startTime: 1, endTime: 2, text: 'en subtitle' }], secondary: [{ startTime: 1, endTime: 2, text: 'ja subtitle' }] };
-    return { timeline, history: { ...emptyHistory(), [period]: timeline } };
+    const blocks = [{ kind: 'dialogue', startTime: 1, endTime: 2, primary: [{ sourceIndex: 0, text: 'en subtitle' }], secondary: [{ sourceIndex: 0, text: 'ja subtitle' }] }];
+    return { generation: 1, updateReason, timeline, history: { ...emptyHistory(), [period]: timeline }, display: { status: 'ready', blocks, history: { past: [], current: [], future: [], [period]: blocks } } };
 };
 
 describe('subtitle-session の終了後直接取得', /** 終了状態と資源解除の成否を分けて検証する。 */ () => {
@@ -2123,7 +2127,7 @@ describe('subtitle-session のデータ更新購読', () => {
             video.fire('timeupdate');
             expect(next).toHaveBeenCalledTimes(1);
             expect(next).toHaveReturnedTimes(1);
-            expect(next).toHaveLastReturnedWith(initialSnapshot('future'));
+            expect(next).toHaveLastReturnedWith(initialSnapshot('future', 'seek'));
         } finally { session.dispose(); }
     });
 
@@ -2158,5 +2162,162 @@ describe('subtitle-session のデータ更新購読', () => {
         expect(() => session.dispose()).toThrow(AggregateError);
         video.fire('seeked');
         expect(listener).not.toHaveBeenCalled();
+    });
+});
+
+
+describe('subtitle-session の表示snapshot接続', () => {
+    it('初回を世代1で公開し、時刻・seekは世代を維持しsource更新だけで進める', () => {
+        const { options, en, video } = createFixture();
+        const session = createSubtitleSession(options);
+        try {
+            expect(session.getSnapshot()).toMatchObject({ generation: 1, updateReason: 'source', display: { status: 'ready' } });
+            const build = vi.spyOn(displayBuilder, 'buildSubtitleDisplayBlocks');
+            const prepare = vi.spyOn(textPreparation, 'prepareSubtitleDisplayItems');
+            video.fire('timeupdate');
+            expect(session.getSnapshot()).toMatchObject({ generation: 1, updateReason: 'time' });
+            video.fire('seeked');
+            expect(session.getSnapshot()).toMatchObject({ generation: 1, updateReason: 'seek' });
+            expect(build).not.toHaveBeenCalled();
+            expect(prepare).not.toHaveBeenCalled();
+            en.fireCueChange();
+            expect(session.getSnapshot()).toMatchObject({ generation: 2, updateReason: 'source' });
+            expect(build).toHaveBeenCalledTimes(1);
+        } finally { session.dispose(); }
+    });
+
+    it('表示枠・要素をコピーし、同じ取得内だけ対応historyのコピーを共有する', () => {
+        const { options, video } = createFixture();
+        const session = createSubtitleSession(options);
+        try {
+            const readTime = vi.fn(() => 1.5);
+            Object.defineProperty(video, 'currentTime', { configurable: true, get: readTime });
+            const first = session.getSnapshot().display;
+            const second = session.getSnapshot().display;
+            if (first.status !== 'ready' || second.status !== 'ready') throw new Error('Expected ready');
+            expect(first.history.current[0]).toBe(first.blocks[0]);
+            expect(first.blocks[0]).not.toBe(second.blocks[0]);
+            const block = first.blocks[0];
+            if (block === undefined) throw new Error('Expected block');
+            Object.assign(block.primary[0] ?? {}, { text: 'changed' });
+            Reflect.set(block.primary, 'length', 0);
+            Reflect.set(first.blocks, 'length', 0);
+            const fresh = session.getSnapshot().display;
+            if (fresh.status !== 'ready') throw new Error('Expected ready');
+            expect(fresh.blocks[0]?.primary[0]?.text).toBe('en subtitle');
+            expect(readTime).not.toHaveBeenCalled();
+        } finally { session.dispose(); }
+    });
+
+    it.each([false, true])('初回の正常な空と不正時刻を区別する: invalid=%s', (invalid) => {
+        const { options, video } = createFixture(undefined, null, []);
+        if (invalid) video.currentTime = NaN;
+        const session = createSubtitleSession(options);
+        try {
+            expect(session.getSnapshot()).toMatchObject({ generation: 1, updateReason: 'source', timeline: emptyTimeline(), history: emptyHistory() });
+            expect(session.getSnapshot().display).toEqual(invalid ? { status: 'invalid-time', blocks: [] } : { status: 'ready', blocks: [], history: { past: [], current: [], future: [] } });
+        } finally { session.dispose(); }
+    });
+
+    it('cue読取失敗は不正時刻より優先し、時刻正常化だけでは復帰しない', () => {
+        const { options, en, video } = createFixture();
+        const session = createSubtitleSession(options);
+        try {
+            Object.defineProperty(en, 'cues', { configurable: true, get() { throw new Error('read failed'); } });
+            video.currentTime = NaN;
+            en.fireCueChange();
+            expect(session.getSnapshot()).toEqual(emptySnapshot());
+            video.currentTime = 1.5;
+            video.fire('timeupdate');
+            expect(session.getSnapshot().display).toEqual({ status: 'unavailable', reason: 'timeline-failed' });
+            setTrackCues(en, ['recovered']);
+            en.fireCueChange();
+            expect(session.getSnapshot()).toMatchObject({ generation: 3, display: { status: 'ready' } });
+        } finally { session.dispose(); }
+    });
+
+    it.each([1.5, NaN])('表示構築失敗でも元字幕を保持し、時刻正常化だけでは復帰しない: %s', (time) => {
+        const { options, video, en } = createFixture();
+        video.currentTime = time;
+        vi.spyOn(displayBuilder, 'buildSubtitleDisplayBlocks').mockImplementationOnce(() => { throw new RangeError('display invalid'); });
+        const session = createSubtitleSession(options);
+        try {
+            expect(session.getSnapshot()).toMatchObject({ generation: 1, display: { status: 'unavailable', reason: 'display-failed' } });
+            expect(session.getSnapshot().timeline.primary).toHaveLength(1);
+            expect(session.getSnapshot().history.current.primary).toHaveLength(Number.isNaN(time) ? 0 : 1);
+            video.currentTime = 1.5;
+            video.fire('seeked');
+            expect(session.getSnapshot().display).toEqual({ status: 'unavailable', reason: 'display-failed' });
+            en.fireCueChange();
+            expect(session.getSnapshot().display.status).toBe('ready');
+        } finally { session.dispose(); }
+    });
+
+    it('不正時刻では枠を保持し、再構築なしで正常化する', () => {
+        const { options, video } = createFixture();
+        const session = createSubtitleSession(options);
+        try {
+            const build = vi.spyOn(displayBuilder, 'buildSubtitleDisplayBlocks');
+            video.currentTime = NaN;
+            video.fire('timeupdate');
+            expect(session.getSnapshot().display).toMatchObject({ status: 'invalid-time', blocks: [{ startTime: 1, endTime: 2 }] });
+            expect(session.getSnapshot().history).toEqual(emptyHistory());
+            video.currentTime = 1.5;
+            video.fire('seeked');
+            expect(session.getSnapshot().display).toMatchObject({ status: 'ready', history: { current: [{ startTime: 1, endTime: 2 }] } });
+            expect(build).not.toHaveBeenCalled();
+        } finally { session.dispose(); }
+    });
+
+    it.each(['timeupdate', 'seeked'] as const)('%sで読込みが完了した場合も構築・通知は一度で更新理由を区別する', (signal) => {
+        const { options, en, ja, video } = createFixture();
+        setTrackCues(en, []);
+        setTrackCues(ja, []);
+        const session = createSubtitleSession(options);
+        try {
+            const notify = vi.fn(() => session.getSnapshot());
+            session.subscribe(notify);
+            const build = vi.spyOn(displayBuilder, 'buildSubtitleDisplayBlocks');
+            setTrackCues(en, ['loaded']);
+            setTrackCues(ja, ['loaded translation']);
+            video.fire(signal);
+            expect(build).toHaveBeenCalledTimes(1);
+            expect(notify).toHaveBeenCalledTimes(1);
+            expect(notify).toHaveLastReturnedWith(expect.objectContaining({ generation: 2, updateReason: signal === 'seeked' ? 'seek' : 'source' }));
+        } finally { session.dispose(); }
+    });
+
+    it('変換失敗の警告は一度だけで、後続変換・補助分類を続ける', () => {
+        const { options, en, logger } = createFixture();
+        const convert = vi.spyOn(textConverter, 'toSubtitlePlainText').mockImplementationOnce(() => { throw new Error('convert failed'); }).mockImplementation(text => text);
+        const session = createSubtitleSession(options);
+        try {
+            en.fireCueChange();
+            convert.mockImplementationOnce(() => { throw new Error('failed again'); });
+            en.fireCueChange();
+            expect(logger.warn.mock.calls.filter(call => call[0] === 'Subtitle text conversion failed; using original text')).toHaveLength(1);
+            expect(convert).toHaveBeenCalledTimes(6);
+            setTrackCues(en, ['〝人物紹介〟']);
+            en.fireCueChange();
+            expect(session.getSnapshot().display).toMatchObject({ status: 'ready', blocks: expect.arrayContaining([expect.objectContaining({ kind: 'auxiliary', primary: [{ sourceIndex: 0, text: '〝人物紹介〟' }] })]) });
+        } finally { session.dispose(); }
+    });
+});
+
+
+describe('subtitle-session の時刻取得例外', () => {
+    it('getterのRangeErrorを不正時刻へ読み替えず、失敗を公開して再送出する', () => {
+        const { options, video, logger } = createFixture();
+        const session = createSubtitleSession(options);
+        const error = new RangeError('unexpected time getter failure');
+        try {
+            Object.defineProperty(video, 'currentTime', { configurable: true, get() { throw error; } });
+            const notify = vi.fn(() => session.getSnapshot());
+            session.subscribe(notify);
+            expect(() => video.fire('timeupdate')).toThrow(error);
+            expect(logger.error).toHaveBeenCalledWith('subtitle history update failed', { error });
+            expect(session.getSnapshot()).toMatchObject({ generation: 1, timeline: { primary: [{ text: 'en subtitle' }] }, display: { status: 'unavailable', reason: 'display-failed' } });
+            expect(notify).toHaveBeenCalledTimes(1);
+        } finally { session.dispose(); }
     });
 });

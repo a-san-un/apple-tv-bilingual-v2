@@ -23,6 +23,8 @@ import type {
     TimedSubtitleText,
 
     SubtitleTrackRole,
+    SubtitleDisplayBlock,
+    SubtitleDisplaySnapshot,
 } from '../shared/types';
 import {
     createSubtitleSource,
@@ -35,13 +37,21 @@ import {
 } from './text-track-resolver';
 
 import { buildSubtitleTimeline } from './subtitle-timeline';
-import { deriveSubtitleHistory } from './subtitle-history';
+import { deriveSubtitleHistory, deriveSubtitleDisplayHistory } from './subtitle-history';
+import { prepareSubtitleDisplayItems } from './subtitle-text-parts';
+import { buildSubtitleDisplayBlocks } from './subtitle-display-blocks';
 
 /** session の取得境界。cue・track・video の参照を含めない。 */
-export type SubtitleSessionSnapshot = {
+export type SubtitleSessionSnapshot = Readonly<{
+    generation: number;
+    updateReason: SubtitleUpdateReason;
     timeline: SubtitleTimeline;
     history: SubtitleHistorySnapshot;
-};
+    display: SubtitleDisplaySnapshot;
+}>;
+
+/** 元データ更新・時刻更新・seekを区別する公開理由。 */
+export type SubtitleUpdateReason = 'source' | 'time' | 'seek';
 
 /** データの取得と破棄を提供する字幕接続。 */
 export type SubtitleSession = Disposable & {
@@ -143,6 +153,13 @@ export const createSubtitleSession = (
     let secondaryCueChanges = 0;
     let timeline: SubtitleTimeline = createEmptyTimeline();
     let history: SubtitleHistorySnapshot = createEmptyHistory();
+    let generation = 0;
+    let updateReason: SubtitleUpdateReason = 'source';
+    let displayBlocks: readonly SubtitleDisplayBlock[] = [];
+    let display: SubtitleDisplaySnapshot = { status: 'ready', blocks: [], history: { past: [], current: [], future: [] } };
+    let conversionWarningIssued = false;
+    let playbackUpdateReason: SubtitleUpdateReason | null = null;
+    // 公開generationとは別に、時刻更新を含む再入を遮断する。
     let truthRevision = 0;
     const snapshotListeners = new Set<{ listener: () => void }>();
 
@@ -172,7 +189,35 @@ export const createSubtitleSession = (
         const copyPeriod = (value: SubtitleTimeline): SubtitleTimeline => ({
             primary: value.primary.map(copy), secondary: value.secondary.map(copy),
         });
+        const blockCopies = new Map<SubtitleDisplayBlock, SubtitleDisplayBlock>();
+        /** @param block 内部の表示枠。@returns この取得内で共有する独立した枠と表示要素。 */
+        const copyBlock = (block: SubtitleDisplayBlock): SubtitleDisplayBlock => {
+            const existing = blockCopies.get(block);
+            if (existing !== undefined) return existing;
+            const cloned = {
+                ...block,
+                primary: block.primary.map(item => ({ ...item })),
+                secondary: block.secondary.map(item => ({ ...item })),
+            };
+            blockCopies.set(block, cloned);
+            return cloned;
+        };
+        let copiedDisplay: SubtitleDisplaySnapshot;
+        if (display.status === 'unavailable') copiedDisplay = { ...display };
+        else if (display.status === 'invalid-time') {
+            copiedDisplay = { status: 'invalid-time', blocks: display.blocks.map(copyBlock) };
+        } else {
+            copiedDisplay = {
+                status: 'ready', blocks: display.blocks.map(copyBlock),
+                history: {
+                    past: display.history.past.map(copyBlock),
+                    current: display.history.current.map(copyBlock),
+                    future: display.history.future.map(copyBlock),
+                },
+            };
+        }
         return {
+            generation, updateReason, display: copiedDisplay,
             timeline: copyPeriod(timeline),
             history: { past: copyPeriod(history.past), current: copyPeriod(history.current), future: copyPeriod(history.future) },
         };
@@ -207,66 +252,115 @@ export const createSubtitleSession = (
     };
 
     /**
-     * 次のtimelineと同じ世代の分類結果をそろえてから公開する。
-     * @param nextTimeline 検証済みの次のtruth。時刻だけの更新では保持済みtruthを渡す。
-     * @param revision 更新の世代。再入・停止で変わった場合は公開しない。
-     * @throws 予期しない時刻取得・分類の例外。クリアと通知後に再送出する。
+     * 同じ入力世代を一度の時刻取得で分類し、一括公開する。
+     * @param nextTimeline 次の元字幕。
+     * @param nextBlocks 同世代の構築済み表示枠。
+     * @param failure 構築失敗。時刻正常化だけでは解除しない。
+     * @param nextGeneration 元データ・構成の世代。
+     * @param reason 更新契機。seek中の再構築もseekとする。
+     * @param revision 再入遮断用の内部更新番号。
+     * @throws 予期しない時刻取得・分類例外。失敗状態の公開後に再送出する。
      */
-    const publishHistory = (nextTimeline: SubtitleTimeline, revision: number): void => {
-        try {
-            const nextHistory = deriveSubtitleHistory(nextTimeline, videoEl.currentTime);
-            if (disposed || revision !== truthRevision) return;
-            // 時刻取得中に旧データを観測されても、新旧のtruthとhistoryを混在させない。
-            timeline = nextTimeline;
-            history = nextHistory;
-            notifySnapshotChange(revision);
-        } catch (error) {
-            if (disposed || revision !== truthRevision) return;
-            timeline = nextTimeline;
-            history = createEmptyHistory();
-            if (error instanceof RangeError) {
-                logger.warn('subtitle history input rejected', { error });
-                notifySnapshotChange(revision);
-                return;
+    const publishHistory = (
+        nextTimeline: SubtitleTimeline,
+        nextBlocks: readonly SubtitleDisplayBlock[],
+        failure: 'timeline-failed' | 'display-failed' | null,
+        nextGeneration: number,
+        reason: SubtitleUpdateReason,
+        revision: number,
+    ): void => {
+        let nextHistory = createEmptyHistory();
+        let nextDisplay: SubtitleDisplaySnapshot = { status: 'unavailable', reason: failure ?? 'display-failed' };
+        let unexpected: { error: unknown } | null = null;
+        if (failure !== 'timeline-failed') {
+            let currentTime: number;
+            let invalidTime = false;
+            try {
+                currentTime = videoEl.currentTime;
+                invalidTime = !Number.isFinite(currentTime) || currentTime < 0;
+                nextHistory = deriveSubtitleHistory(nextTimeline, currentTime);
+                if (failure === null) {
+                    nextDisplay = { status: 'ready', blocks: nextBlocks, history: deriveSubtitleDisplayHistory(nextBlocks, currentTime) };
+                }
+            } catch (error) {
+                if (disposed || revision !== truthRevision) return;
+                if (invalidTime && error instanceof RangeError) {
+                    nextHistory = createEmptyHistory();
+                    if (failure === null) nextDisplay = { status: 'invalid-time', blocks: nextBlocks };
+                    logger.warn('subtitle history input rejected', { error });
+                } else {
+                    logger.error('subtitle history update failed', { error });
+                    unexpected = { error };
+                }
             }
-            logger.error('subtitle history update failed', { error });
-            notifySnapshotChange(revision);
-            throw error;
         }
+        if (disposed || revision !== truthRevision) return;
+        timeline = nextTimeline;
+        history = nextHistory;
+        display = nextDisplay;
+        displayBlocks = nextDisplay.status === 'unavailable' ? [] : nextBlocks;
+        generation = nextGeneration;
+        updateReason = reason;
+        notifySnapshotChange(revision);
+        if (unexpected !== null) throw unexpected.error;
     };
 
-    /** 保持済みtruthから分類だけを更新し、現在字幕のためのsource再走査は行わない。 */
+    /** 保持済み構成を分類し、構築失敗は次のsource更新まで維持する。 */
     const refreshHistory = (): void => {
         if (disposed) return;
-        publishHistory(timeline, ++truthRevision);
+        publishHistory(timeline, displayBlocks, display.status === 'unavailable' ? display.reason : null,
+            generation, playbackUpdateReason ?? 'time', ++truthRevision);
     };
 
-    /** source 更新だけで cue を取得する。入力違反時は古い truth を残さない。 */
+    /** source更新で元字幕・本文・表示枠を同じ世代として構築する。 */
     const rebuildTruth = (): void => {
         if (disposed || source === null) return;
         const activeSource = source;
         const revision = ++truthRevision;
+        const nextGeneration = generation + 1;
+        const reason = playbackUpdateReason === 'seek' ? 'seek' : 'source';
         let building = false;
         let nextTimeline: SubtitleTimeline;
         try {
             const snapshot = activeSource.getSnapshot();
             building = true;
+            if (snapshot.readFailed) throw new RangeError('Subtitle source cue read failed');
             nextTimeline = buildSubtitleTimeline(snapshot.primaryCues, snapshot.secondaryCues);
         } catch (error) {
             if (disposed || revision !== truthRevision || source !== activeSource) return;
-            timeline = createEmptyTimeline();
-            history = createEmptyHistory();
             if (building && error instanceof RangeError) {
                 logger.warn('subtitle truth input rejected', { error });
-                notifySnapshotChange(revision);
-                return;
+            } else {
+                logger.error('subtitle truth update failed', { error });
             }
-            logger.error('subtitle truth update failed', { error });
-            notifySnapshotChange(revision);
-            throw error;
+            publishHistory(createEmptyTimeline(), [], 'timeline-failed', nextGeneration, reason, revision);
+            if (!(building && error instanceof RangeError)) throw error;
+            return;
         }
         if (disposed || revision !== truthRevision || source !== activeSource) return;
-        publishHistory(nextTimeline, revision);
+        let nextBlocks: readonly SubtitleDisplayBlock[] = [];
+        let failure: 'display-failed' | null = null;
+        let unexpected: { error: unknown } | null = null;
+        try {
+            const prepared = prepareSubtitleDisplayItems(nextTimeline);
+            if (disposed || revision !== truthRevision) return;
+            if (prepared.conversionFailed && !conversionWarningIssued) {
+                conversionWarningIssued = true;
+                logger.warn('Subtitle text conversion failed; using original text');
+            }
+            nextBlocks = buildSubtitleDisplayBlocks(nextTimeline, prepared);
+        } catch (error) {
+            if (disposed || revision !== truthRevision || source !== activeSource) return;
+            failure = 'display-failed';
+            if (error instanceof RangeError) logger.warn('subtitle display input rejected', { error });
+            else {
+                logger.error('subtitle display update failed', { error });
+                unexpected = { error };
+            }
+        }
+        if (disposed || revision !== truthRevision || source !== activeSource) return;
+        publishHistory(nextTimeline, nextBlocks, failure, nextGeneration, reason, revision);
+        if (unexpected !== null) throw unexpected.error;
     };
 
     /**
@@ -662,9 +756,15 @@ export const createSubtitleSession = (
 
         for (const reason of PLAYBACK_SIGNALS) {
             if (event.type === reason) {
-                const revision = truthRevision;
-                reevaluateUnavailableCues(reason);
-                if (!disposed && revision === truthRevision) refreshHistory();
+                const previousReason = playbackUpdateReason;
+                playbackUpdateReason = reason === 'seeked' ? 'seek' : 'time';
+                try {
+                    const revision = truthRevision;
+                    reevaluateUnavailableCues(reason);
+                    if (!disposed && revision === truthRevision) refreshHistory();
+                } finally {
+                    playbackUpdateReason = previousReason;
+                }
                 return;
             }
         }
@@ -717,6 +817,9 @@ export const createSubtitleSession = (
         truthRevision += 1;
         timeline = createEmptyTimeline();
         history = createEmptyHistory();
+        displayBlocks = [];
+        display = { status: 'ready', blocks: [], history: { past: [], current: [], future: [] } };
+        conversionWarningIssued = false;
 
         try {
             bag.dispose();
