@@ -316,6 +316,8 @@ listener 解除失敗時の確認は「cleanup、二重 listener、二重描画�
 
 ### 再生経路への接続の確認
 
+- source snapshotのreadFailedは、どちらかのcue読取例外でtrueとなり、他方の取得を続ける。未採用・cuesがnull・正常な空はfalseとし、次の正常取得や別取得へ失敗を持ち越さない。取得結果のフラグ変更が後続取得へ伝わらないことも確認する。
+
 - source更新では同じ入力からtimelineとhistoryを構築し、完了後に公開・通知する。
 - 時刻だけの更新では保持済み元の字幕データから分類し、現在字幕のためのsource再走査・再bind・全体restartを追加しない。
 - 元の字幕データ構築失敗ではtimelineと全区分をクリアし、不正な再生時刻では有効なtimelineを保持して全区分を空にする。

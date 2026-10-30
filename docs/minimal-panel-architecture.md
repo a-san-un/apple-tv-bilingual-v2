@@ -1437,7 +1437,7 @@ function createSubtitleSource(
 #### 失敗と破棄
 
 - 購読者の例外は記録し、ほかの購読者への通知を継続する。
-- cue の読取失敗は記録し、その track の cue 配列を空にする。
+- cueの読取失敗は記録し、そのtrackのcue配列を空にする。snapshotのreadFailedは当該取得でどちらかのcue読取りに例外が起きた場合にtrueとし、他方の取得は継続する。フラグをsourceへ保持せず、取得ごとに集計する。未採用・cuesがnull・正常な空はfalseであり、falseを読込み完了の保証にしない。getSummaryの契約は変更しない。
 - listener 登録失敗時は、登録済み分の解除を試して未 bind に戻す。
 - 解除失敗は記録する。管理上の binding 解除と、実際の listener 解除成功は区別する。
 - dispose は listener の解除を試して購読者を破棄し、unbound を通知しない。
@@ -1862,6 +1862,7 @@ export type SubtitleSourceSnapshot = {
   pair: ResolvedTrackPair;
   primaryCues: SubtitleCueSnapshot[];
   secondaryCues: SubtitleCueSnapshot[];
+  readFailed: boolean;
 };
 
 export type SubtitleSourceChange =

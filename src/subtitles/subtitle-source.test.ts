@@ -110,7 +110,7 @@ describe('createSubtitleSource の基本動作', () => {
       expect(source.getSnapshot()).toEqual({
         pair: { primary: null, secondary: null },
         primaryCues: [],
-        secondaryCues: [],
+        secondaryCues: [], readFailed: false,
       });
     } finally {
       source.dispose();
@@ -259,7 +259,7 @@ describe('createSubtitleSource の基本動作', () => {
       expect(source.getSnapshot()).toEqual({
         pair: { primary: null, secondary: null },
         primaryCues: [],
-        secondaryCues: [],
+        secondaryCues: [], readFailed: false,
       });
 
       firstListener.mockClear();

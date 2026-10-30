@@ -305,12 +305,16 @@ export const createSubtitleSource = (
 
   /**
    * 1 つの track の cue 一覧を snapshot に写す。
-   * cue の読取に失敗しても空配列で返し、source 全体を止めない。
+   * cueの読取失敗は空配列と取得単位のフラグで返し、他方の取得を止めない。
    *
-   * @param resolved snapshot 用にコピー済みの track 情報。null なら空配列。
-   * @returns 新しく作った cue 配列。各 cue の track は、渡された snapshot 用の情報を参照する。
+   * @param resolved snapshot用にコピー済みのtrack情報。nullなら空配列。
+   * @param status getSnapshotが所有する取得単位の失敗フラグ。読取例外時だけtrueにする。
+   * @returns 新しいcue配列。各cueのtrackは当該snapshot用の情報を参照する。
    */
-  const readCues = (resolved: ResolvedSubtitleTrack | null): SubtitleCueSnapshot[] => {
+  const readCues = (
+    resolved: ResolvedSubtitleTrack | null,
+    status: { readFailed: boolean },
+  ): SubtitleCueSnapshot[] => {
     if (resolved === null) {
       return [];
     }
@@ -328,6 +332,7 @@ export const createSubtitleSource = (
         track: resolved,
       }));
     } catch (error) {
+      status.readFailed = true;
       logger.error('subtitle source failed to read cues', {
         track: summarizeTrack(resolved),
         error,
@@ -383,7 +388,8 @@ export const createSubtitleSource = (
    * pair と track の管理情報はコピーし、受け手による変更が source 内部へ伝わらないようにする。
    * 実際の TextTrack は共有するため、その参照を通したブラウザ状態の変更までは防がない。
    *
-   * @returns 呼び出し時点の管理情報と cue の写し。未 bind なら pair は両方 null、cue は空配列。
+   * @returns 管理情報・cueの写しと取得単位のreadFailed。どちらかのcue読取例外でtrue。
+   *   未bind・cuesがnull・正常な空はfalseであり、読込み完了を保証する値ではない。
    */
   const getSnapshot = (): SubtitleSourceSnapshot => {
     const snapshotPair: ResolvedTrackPair = {
@@ -391,11 +397,13 @@ export const createSubtitleSource = (
       secondary: copyResolvedTrack(pair.secondary),
     };
 
-    return {
-      pair: snapshotPair,
-      primaryCues: readCues(snapshotPair.primary),
-      secondaryCues: readCues(snapshotPair.secondary),
+    const snapshot: SubtitleSourceSnapshot = {
+      pair: snapshotPair, primaryCues: [], secondaryCues: [], readFailed: false,
     };
+    // 取得ごとに状態を閉じ、先行言語の失敗でも他方の読取りを続ける。
+    snapshot.primaryCues = readCues(snapshotPair.primary, snapshot);
+    snapshot.secondaryCues = readCues(snapshotPair.secondary, snapshot);
+    return snapshot;
   };
 
   /**

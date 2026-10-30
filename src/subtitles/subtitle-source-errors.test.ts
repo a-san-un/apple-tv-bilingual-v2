@@ -13,6 +13,93 @@ import { createFixture } from './subtitle-source-test-helpers';
 import { resolveTrackPair } from './text-track-resolver';
 
 describe('createSubtitleSource のエラー境界', () => {
+
+    it.each([
+        ['primary', 'cues'], ['secondary', 'cues'],
+        ['primary', 'startTime'], ['secondary', 'startTime'],
+        ['primary', 'endTime'], ['secondary', 'endTime'],
+        ['primary', 'text'], ['secondary', 'text'],
+    ] as const)('%sの%s読取失敗を取得単位で伝え、他方の取得と後続復帰を維持する', /**
+     * 途中のcue読取例外も当該言語全体の失敗として扱う。
+     * @param role 失敗させる言語役割。
+     * @param field 例外を投げるプロパティ。
+     */ (role, field) => {
+        const { ja, en, pair, source } = createFixture();
+        const track = role === 'primary' ? ja : en;
+        const key = role === 'primary' ? 'primaryCues' : 'secondaryCues';
+        const other = role === 'primary' ? 'secondaryCues' : 'primaryCues';
+        let failed = true;
+        const raw = { startTime: 1, endTime: 2, text: 'recovered' };
+        const bad = { ...raw };
+        if (field !== 'cues') Object.defineProperty(bad, field, {
+            /** cueプロパティの例外を再現する。@throws Error 読取失敗。 */
+            get() { throw new Error('cue field failed'); },
+        });
+        try {
+            source.bind(pair);
+            expect(source.getSnapshot().readFailed).toBe(false);
+            Object.defineProperty(track, 'cues', {
+                configurable: true,
+                /** @returns 取得するcue配列。@throws Error cues読取失敗時。 */
+                get() {
+                    if (failed && field === 'cues') throw new Error('cues failed');
+                    return failed ? [raw, bad] : [raw];
+                },
+            });
+            const broken = source.getSnapshot();
+            expect(broken.readFailed).toBe(true);
+            expect(broken[key]).toEqual([]);
+            expect(broken[other]).toHaveLength(1);
+            broken.readFailed = false;
+            expect(source.getSnapshot().readFailed).toBe(true);
+            expect(source.getSummary()).not.toHaveProperty('readFailed');
+            failed = false;
+            const recovered = source.getSnapshot();
+            expect(recovered.readFailed).toBe(false);
+            expect(recovered[key][0]?.text).toBe('recovered');
+            expect(recovered[other]).toHaveLength(1);
+            recovered.readFailed = true;
+            expect(source.getSnapshot().readFailed).toBe(false);
+        } finally { source.dispose(); }
+    });
+
+    it('両言語が失敗しても両方を取得し、各失敗を記録する', /** 先行失敗で他方を省略しない。 */ () => {
+        const { ja, en, pair, logger, source } = createFixture();
+        const primaryRead = vi.fn(/** @throws Error 学習言語の読取失敗。 */ () => { throw new Error('primary failed'); });
+        const secondaryRead = vi.fn(/** @throws Error 母国語の読取失敗。 */ () => { throw new Error('secondary failed'); });
+        try {
+            source.bind(pair);
+            Object.defineProperty(ja, 'cues', { get: primaryRead });
+            Object.defineProperty(en, 'cues', { get: secondaryRead });
+            logger.error.mockClear();
+            const snapshot = source.getSnapshot();
+            expect(snapshot.readFailed).toBe(true);
+            expect(snapshot.primaryCues).toEqual([]);
+            expect(snapshot.secondaryCues).toEqual([]);
+            expect(primaryRead).toHaveBeenCalledTimes(1);
+            expect(secondaryRead).toHaveBeenCalledTimes(1);
+            expect(logger.error).toHaveBeenCalledTimes(2);
+        } finally { source.dispose(); }
+    });
+
+    it.each([null, []])('未採用・null・正常な空を読取失敗と扱わない: %j', /**
+     * falseは読込み完了の保証ではなく、例外がないことだけを示す。
+     * @param cues 読込み前のnullまたは正常な空一覧。
+     */ (cues) => {
+        const { ja, en, pair, source } = createFixture();
+        try {
+            expect(source.getSnapshot().readFailed).toBe(false);
+            Object.defineProperty(ja, 'cues', { value: cues });
+            Object.defineProperty(en, 'cues', { value: cues });
+            source.bind(pair);
+            expect(source.getSnapshot()).toEqual({ pair, primaryCues: [], secondaryCues: [], readFailed: false });
+            source.unbind();
+            expect(source.getSnapshot().readFailed).toBe(false);
+            source.dispose();
+            expect(source.getSnapshot().readFailed).toBe(false);
+        } finally { source.dispose(); }
+    });
+
     it('購読者の例外は他の購読者と track 側の dispatch を止めない', () => {
         const { ja, pair, logger, source } = createFixture();
         try {
@@ -71,6 +158,7 @@ describe('createSubtitleSource のエラー境界', () => {
 
             const snapshot = source.getSnapshot();
 
+            expect(snapshot.readFailed).toBe(true);
             expect(snapshot.primaryCues).toEqual([]);
             expect(snapshot.secondaryCues.map((cue) => cue.text)).toEqual(['Hello']);
             expect(logger.error).toHaveBeenCalled();
@@ -107,7 +195,7 @@ describe('createSubtitleSource のエラー境界', () => {
             expect(source.getSnapshot()).toEqual({
                 pair: { primary: null, secondary: null },
                 primaryCues: [],
-                secondaryCues: [],
+                secondaryCues: [], readFailed: false,
             });
 
             listener.mockClear();
@@ -156,7 +244,7 @@ describe('createSubtitleSource のエラー境界', () => {
             expect(source.getSnapshot()).toEqual({
                 pair: { primary: null, secondary: null },
                 primaryCues: [],
-                secondaryCues: [],
+                secondaryCues: [], readFailed: false,
             });
 
             expect(() => source.dispose()).not.toThrow();

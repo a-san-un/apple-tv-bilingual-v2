@@ -89,13 +89,14 @@ export type SubtitleTimeline = Readonly<{
 
 /**
  * `subtitle-source.ts` が返す source 全体の snapshot。
- * bind 中の track pair と、その track から読んだ cue 一覧だけを持つ。
- * 未 bind または読取失敗時は cue 配列を空にする。
+ * bind中のtrack pair、cue一覧、その取得でのcue読取失敗を持つ。
+ * 未bindまたは読取失敗時はcue配列を空にし、読取例外だけをreadFailedで区別する。
  */
 export type SubtitleSourceSnapshot = {
   pair: ResolvedTrackPair;
   primaryCues: SubtitleCueSnapshot[];
   secondaryCues: SubtitleCueSnapshot[];
+  readFailed: boolean;
 };
 
 /**

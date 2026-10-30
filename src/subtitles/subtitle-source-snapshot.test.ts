@@ -178,7 +178,7 @@ describe('createSubtitleSource の snapshot と参照', () => {
             const emptySnapshot = {
                 pair: { primary: null, secondary: null },
                 primaryCues: [],
-                secondaryCues: [],
+                secondaryCues: [], readFailed: false,
             };
 
             expect(first.source.getSnapshot()).toEqual(emptySnapshot);
