@@ -1814,6 +1814,60 @@ const initialSnapshot = (period: 'current' | 'future' = 'current') => {
     return { timeline, history: { ...emptyHistory(), [period]: timeline } };
 };
 
+describe('subtitle-session の終了後直接取得', /** 終了状態と資源解除の成否を分けて検証する。 */ () => {
+    it('通常終了後は通常のErrorで拒否し、反復disposeや旧イベントで再公開しない', /** 終了専用snapshotや最終通知を追加しない。 */ () => {
+        const { options, video, en } = createFixture();
+        const session = createSubtitleSession(options);
+        const listener = vi.fn();
+        session.subscribe(listener);
+        expect(session.getSnapshot().timeline.primary).toHaveLength(1);
+        session.dispose();
+        const read = /** @returns 取得結果。@throws Error 終了済み。 */ () => session.getSnapshot();
+        expect(read).toThrowError(new Error('Subtitle session has been disposed'));
+        expect(read).toThrow(Error);
+        expect(read).not.toThrow(AggregateError);
+        const removed = video.removeEventListener.mock.calls.length;
+        session.dispose();
+        expect(video.removeEventListener).toHaveBeenCalledTimes(removed);
+        video.fire('timeupdate');
+        en.fireCueChange();
+        expect(listener).not.toHaveBeenCalled();
+        expect(read).toThrowError(new Error('Subtitle session has been disposed'));
+    });
+
+    it.each([false, true])('cleanup中の再入取得を拒否し、解除失敗=%sでも終了を維持する', /**
+     * callback内のassertionをcleanup例外として隠さないよう、外側で取得エラーを確認する。
+     * @param failCleanup 解除そのものも失敗させる場合はtrue。
+     */ (failCleanup) => {
+        const { options, video } = createFixture();
+        const session = createSubtitleSession(options);
+        const originalRemove = video.removeEventListener.getMockImplementation();
+        const errors: unknown[] = [];
+        video.removeEventListener.mockImplementationOnce(/**
+         * 解除中に直接取得し、その結果を外側の検証へ残す。
+         * @param type 解除対象イベント。
+         * @param handler 解除対象listener。
+         * @throws Error failCleanupがtrueの場合の解除失敗。
+         */ (type: string, handler: EventListener) => {
+            try { session.getSnapshot(); } catch (error) { errors.push(error); }
+            if (failCleanup) throw new Error('test cleanup failure');
+            originalRemove?.(type, handler);
+        });
+        const dispose = /** 終了処理を実行する。@throws AggregateError 解除失敗時。 */ () => session.dispose();
+        if (failCleanup) expect(dispose).toThrow(AggregateError);
+        else expect(dispose).not.toThrow();
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toBeInstanceOf(Error);
+        expect((errors[0] as Error).constructor).toBe(Error);
+        expect((errors[0] as Error).message).toBe('Subtitle session has been disposed');
+        expect(/** @returns 取得結果。@throws Error 終了済み。 */ () => session.getSnapshot()).toThrowError(new Error('Subtitle session has been disposed'));
+        const removed = video.removeEventListener.mock.calls.length;
+        expect(dispose).not.toThrow();
+        expect(video.removeEventListener).toHaveBeenCalledTimes(removed);
+    });
+});
+
+
 describe('subtitle-session の truth と history', () => {
     it('診断無効でも初回bindで構築し、取得結果の変更を内部へ伝えない', () => {
         const { options, logger } = createFixture();
@@ -1919,7 +1973,7 @@ describe('subtitle-session の truth と history', () => {
         expect(() => session.dispose()).toThrow(AggregateError);
         video.fire('seeked');
         en.fireCueChange();
-        expect(session.getSnapshot()).toEqual(emptySnapshot());
+        expect(/** @returns 取得結果。@throws Error 終了済み。 */ () => session.getSnapshot()).toThrowError(new Error('Subtitle session has been disposed'));
         expect(() => session.dispose()).not.toThrow();
     });
 });
@@ -2048,7 +2102,7 @@ describe('subtitle-session のデータ更新購読', () => {
         expect(() => unsubscribe()).not.toThrow();
         video.fire('seeked');
         expect(next).not.toHaveBeenCalled();
-        expect(session.getSnapshot().timeline.primary).toEqual([]);
+        expect(/** @returns 取得結果。@throws Error 終了済み。 */ () => session.getSnapshot()).toThrowError(new Error('Subtitle session has been disposed'));
     });
 
     it('通知中に新しい更新が再入したら旧更新の後続通知を打ち切る', () => {

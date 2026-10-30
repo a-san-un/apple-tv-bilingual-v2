@@ -152,8 +152,13 @@ export const createSubtitleSession = (
         secondary: 0,
     };
 
-    /** @returns 元の内部状態を変更できない写し。同じ取得結果内では対応する字幕単位を共有する。 */
+    /**
+     * 保持済みの結果だけをコピーし、取得による再計算は行わない。
+     * @returns 元の内部状態を変更できない写し。同じ取得結果内では対応する字幕単位を共有する。
+     * @throws Error dispose開始後。cleanupの成否にかかわらず直接取得を拒否する。
+     */
     const getSnapshot = (): SubtitleSessionSnapshot => {
+        if (disposed) throw new Error('Subtitle session has been disposed');
         const copies = new Map<TimedSubtitleText, TimedSubtitleText>();
         /** @param value 内部の読み取り専用字幕単位。@returns この取得結果だけが共有する写し。 */
         const copy = (value: TimedSubtitleText): TimedSubtitleText => {
