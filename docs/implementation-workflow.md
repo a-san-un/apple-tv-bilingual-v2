@@ -916,7 +916,7 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 
 ### 実装開始前の条件
 
-- architecture §14.10の未確定事項を解消し、具体的な期待値をtesting-checklistへ反映する。
+- architecture §14の表示規則とtesting-checklistの期待値を確認する。§14.10の型・関数・受け渡し方法は現行srcと利用先を読んで改めて相談し、実装前に具体化する。
 - 公開型・取得境界・依存方向をarchitecture §5・§6・§17・§18と利用先でそろえる。
 - 新規ファイル名は配置候補と既存ファイルを区別し、空moduleを先に作らない。
 
@@ -925,15 +925,15 @@ module のテスト成功だけで、entry の分岐やブラウザ上の動作�
 | 順序 | 対象 | 作業と完了条件 |
 |---|---|---|
 | 1 | `src/shared/types.ts`、公開型の利用先 | 元字幕・表示部分・補助字幕・ブロック・状態の境界を確定する。既存historyを別の意味へ流用しない |
-| 2 | `src/panel/subtitle-text.ts`、囲み分離の導出と同テスト | 標準WebVTT解析・ruby注釈除去を利用し、原文・時刻を保持して会話と補助の表示部分を準備する |
+| 2 | `src/panel/subtitle-text.ts`、囲み分類の導出と同テスト | 既存の本文変換を重複せず、元字幕単位の会話・補助分類と変換失敗時の原文表示を検証する |
 | 3 | ブロック構築の導出と同テスト | 同時刻枠、母国語の候補、開始時刻・入力順の採用、再結合禁止、最大重なり配置の順で処理し、欠落・二重配置を防ぐ |
 | 4 | `src/subtitles/subtitle-history.ts`と同テスト | 元字幕の分類と区別したブロック状態を導出する。最早開始以上・最遅終了未満で全体強調する |
 | 5 | `src/subtitles/subtitle-session.ts`と同テスト | 構成・状態を同じ世代で公開し、コピー保護・通知・再入・失敗時クリア・解放を検証する |
 | 6 | `src/content/session-lifecycle.ts`、`src/content/debug-subtitle-log.ts`と各テスト | データ取得・更新の中継と診断を新しい公開境界へ合わせる。診断に導出処理を依存させない |
-| 7 | `src/content/panel-session.ts`、`src/panel/panel-renderer.ts`、`src/panel/panel-host.ts`と各テスト | 購読・UI state・DOM所有を維持して描画する。rendererに結合・分離・時刻判定を持ち込まない |
+| 7 | `src/content/panel-session.ts`、`src/panel/panel-renderer.ts`、`src/panel/panel-host.ts`、自動追従の配置先と各テスト | 同じ一覧の会話・補助、片言語の空間、一覧順・全体強調を描画する。追従のownerとDOM対応をそろえ、rendererに結合・分類・時刻判定を持ち込まない |
 | 8 | `src/content/index.ts`と同テスト、実機 | 配線と最終cleanupを確認する。全体回帰検証後にChromeで初回表示・更新・seek・停止・再接続を確認する |
 
-囲み分離の配置候補は`src/subtitles/subtitle-text-parts.ts`、ブロック構築の候補は`src/subtitles/subtitle-display-blocks.ts`とする。採用前に本文準備との依存方向を確認し、architectureのmodule構成とAPIへ反映する。これらを実装済みのファイルとして扱わない。
+囲み分類の配置候補は`src/subtitles/subtitle-text-parts.ts`、ブロック構築の候補は`src/subtitles/subtitle-display-blocks.ts`とする。採用前に本文準備との依存方向を確認し、architectureのmodule構成とAPIへ反映する。自動追従の配置も同じ確認に含め、具体的な型・関数・受け渡し方法は別途相談する。これらを実装済みのファイルとして扱わない。
 
 ### 更新とcleanup
 
@@ -948,7 +948,9 @@ source更新では元データ・表示部分・ブロック構成・状態を�
 - `testing-checklist.md`の「表示ブロックと補助字幕の検証」に従い、固定例・競合・境界・例外・世代・cleanupを確認する。
 - buildは生成先distを削除して再生成するため実行許可を確認する。拡張とApple TV+ページを再読み込みしてChrome確認を行う。
 - 英語2件・日本語3件の同じ枠を48.09800833333331秒以上52.01037777777778秒未満で全体強調し、内部の空白でも途切れないことを確認する。
-- 囲み字幕の分離、過去・未来の保持、前後seek、接続失敗、停止・再接続後の旧DOM・購読遮断を確認する。自動追従は別に確認範囲を記録する。
+- 完全囲みの分類・複数囲み1枠・例外の会話側保持、会話と補助の過去未来保持、複数現在枠の強調、前後seekを確認する。
+- architecture §14.12に従い、自動追従の案内優先順・現在なし・手動停止・明示再開・反復移動防止・位置維持を検証する。実機のスクロール確認と単体テストを区別する。
+- 接続失敗、停止・再接続後の旧DOM・購読・スクロール処理の遮断を確認する。
 - 不要な旧builder・候補生成・型・import・テストの削除は参照先を確認し、明示的な削除承認後の別作業とする。
 - 7:3レイアウトと正式な操作UIはPhase 7で扱う。検証結果・未観測・実装途中の状態を、製品仕様そのものと混同しない。
 
