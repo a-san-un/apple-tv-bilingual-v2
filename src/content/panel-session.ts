@@ -128,7 +128,16 @@ export const createPanelSession = (
         presentation, rendered, trigger: origin === 'subtitle' ? snapshot?.updateReason ?? 'source' : origin,
       });
     } catch (error) {
-      if (!disposed && connection === current && revision === renderRevision) current.follow.afterRender(null);
+      if (!disposed && connection === current && revision === renderRevision) {
+        try {
+          current.follow.afterRender(null);
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'Panel update and follow cleanup failed',
+          );
+        }
+      }
       throw error;
     }
   };
