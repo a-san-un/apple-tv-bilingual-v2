@@ -111,25 +111,6 @@ export type SubtitleSourceChange =
 /** `subtitle-source.ts` の変化通知を受け取る callback。 */
 export type SubtitleSourceListener = (change: SubtitleSourceChange) => void;
 
-/**
- * panel 表示の truth になる字幕表示単位。
- * UI は raw cue ではなく、この block 配列を正本として扱う。
- */
-/** 欠けている言語の本文は null。両側欠損の block は builder が生成しない。 */
-export type SubtitleBlock = {
-  startTime: number;
-  endTime: number;
-  primaryText: string | null;
-  secondaryText: string | null;
-};
-
-/** 移行中の旧再生経路用。新しいtimelineの分類結果とは区別する。 */
-export type LegacySubtitleHistorySnapshot = {
-  current: SubtitleBlock | null;
-  past: SubtitleBlock[];
-  future: SubtitleBlock[];
-};
-
 /** 同じtimelineを元時刻で分類した読み取り結果。現在も複数件・0件を許可する。 */
 export type SubtitleHistorySnapshot = Readonly<{
   past: SubtitleTimeline;

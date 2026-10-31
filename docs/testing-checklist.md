@@ -75,7 +75,8 @@ npm run lint
 優先対象:
 - `src/settings/settings-store.ts`
 - `src/subtitles/text-track-resolver.ts`
-- `src/subtitles/subtitle-block-builder.ts`
+- `src/subtitles/subtitle-text-parts.ts`
+- `src/subtitles/subtitle-display-blocks.ts`
 - `src/subtitles/subtitle-history.ts`
 - `src/layout/player-layout.ts`
 - `src/ui/ui-state.ts`
