@@ -99,6 +99,22 @@ describe('表示枠単位のhistory', /** 元字幕分類とは別の契約を�
     expect(deriveSubtitleHistory(timeline, 14).current).toEqual({ primary: [timeline.primary[2]], secondary: [timeline.secondary[1]] });
     expect(deriveSubtitleDisplayHistory(blocks, 16)).toEqual({ past: blocks, current: [], future: [] });
   });
+
+  it('実機の同時刻英語3断片と日本語1件を1枠にし、断片の装飾・順序を保って現在へ分類する', /** 旧builderの実機回帰を表示枠経路へ移す。 */ () => {
+    const start = 558.9016666666666;
+    const end = 561.8427;
+    const texts = ['<c.white.bg_black>No. And besides,</c>', 'I thought you were', 'on top of the DNA?'];
+    const timeline = {
+      primary: texts.map(/** @param text 観測した原文。@returns 同時刻の元字幕。 */ (text) => ({ startTime: start, endTime: end, text })),
+      secondary: [{ startTime: 559.0591666666667, endTime: 561.8111666666666, text: 'それに 採取は\nお前の担当だろ？' }],
+    };
+    const blocks = buildSubtitleDisplayBlocks(timeline, prepareSubtitleDisplayItems(timeline, displayIdentity));
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: 'dialogue', startTime: start, endTime: end });
+    expect(blocks[0]?.primary.map(/** @param item 学習言語要素。@returns 本文。 */ (item) => item.text)).toEqual(texts);
+    expect(blocks[0]?.secondary.map(/** @param item 母国語要素。@returns 本文。 */ (item) => item.text)).toEqual(['それに 採取は\nお前の担当だろ？']);
+    expect(deriveSubtitleDisplayHistory(blocks, 561.034888)).toEqual({ past: [], current: blocks, future: [] });
+  });
 });
 
 

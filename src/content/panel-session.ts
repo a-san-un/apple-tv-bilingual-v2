@@ -6,9 +6,10 @@
  * 処理 session 終了時には lifecycle が返された dispose を呼ぶ。
  *
  * target の探索、字幕処理の開始停止、truth 構築、
- * UI 意思の変更、自動追従、layout は担当しない。
+ * UI 意思の変更、追従アルゴリズム、layout は担当しない。追従はfollowへ委譲する。
  */
 import { mountPanelHost } from '../panel/panel-host';
+import { createPanelFollow, type PanelFollow } from '../panel/panel-follow';
 import {
   createPanelRenderer,
   type PanelRenderer,
@@ -54,6 +55,7 @@ export type PanelSessionOptions = {
 /** dispose でまとめて切り離す、描画先と取得元の参照。 */
 type PanelConnection = {
   renderer: PanelRenderer;
+  follow: PanelFollow;
   uiState: PanelSessionOptions['uiState'];
   getSubtitleSnapshot: PanelSessionOptions['getSubtitleSnapshot'];
 };
@@ -83,7 +85,7 @@ export const createPanelSession = (
    *
    * @throws snapshot 取得、UI state 取得、DOM 更新の失敗。
    */
-  const renderCurrent = (): void => {
+  const renderCurrent = (origin: 'initial' | 'subtitle' | 'ui'): void => {
     if (disposed || connection === null) {
       return;
     }
@@ -111,24 +113,33 @@ export const createPanelSession = (
       return;
     }
 
-    current.renderer.render({
-      history: snapshot?.history ?? {
-        past: { primary: [], secondary: [] },
-        current: { primary: [], secondary: [] },
-        future: { primary: [], secondary: [] },
-      },
+    const presentation = {
+      generation: snapshot?.generation ?? null,
+      display: snapshot?.display ?? null,
       panelOpen: uiState.panelOpen,
       extensionEnabled: uiState.extensionEnabled,
-    });
+    };
+    try {
+      current.follow.beforeRender();
+      if (disposed || connection !== current || revision !== renderRevision) return;
+      const rendered = current.renderer.render(presentation);
+      if (disposed || connection !== current || revision !== renderRevision) return;
+      current.follow.afterRender(rendered === null ? null : {
+        presentation, rendered, trigger: origin === 'subtitle' ? snapshot?.updateReason ?? 'source' : origin,
+      });
+    } catch (error) {
+      if (!disposed && connection === current && revision === renderRevision) current.follow.afterRender(null);
+      throw error;
+    }
   };
 
   /**
    * 通知経由の表示更新を行う。
    * 失敗は記録し、字幕更新や UI store の通知処理へ伝播させない。
    */
-  const handleUpdate = (): void => {
+  const handleUpdate = (origin: 'subtitle' | 'ui'): void => {
     try {
-      renderCurrent();
+      renderCurrent(origin);
     } catch (error) {
       console.error(
         '[atv-bilingual:panel] panel update failed',
@@ -169,18 +180,21 @@ export const createPanelSession = (
     const renderer = createPanelRenderer(hostEl);
     bag.add(renderer);
 
+    const follow = createPanelFollow();
+    bag.add(follow);
     connection = {
       renderer,
+      follow,
       uiState: options.uiState,
       getSubtitleSnapshot: options.getSubtitleSnapshot,
     };
 
     // 先に購読してから最新値を読み、取得と登録の間の更新を取りこぼさない。
-    bag.add(options.subscribeSubtitle(handleUpdate));
-    bag.add(options.uiState.subscribe(handleUpdate));
+    bag.add(options.subscribeSubtitle(() => handleUpdate('subtitle')));
+    bag.add(options.uiState.subscribe(() => handleUpdate('ui')));
 
     // 初回だけは失敗を隠さず、作成済み資源を解放して呼出元へ返す。
-    renderCurrent();
+    renderCurrent('initial');
 
     return { dispose };
   } catch (error) {

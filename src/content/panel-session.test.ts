@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPanelSession } from './panel-session';
 import * as panelRenderer from '../panel/panel-renderer';
+import * as panelFollow from '../panel/panel-follow';
 import type { Disposable, DisposeFn, UiState } from '../shared/types';
 import type { SubtitleSessionSnapshot } from '../subtitles/subtitle-session';
 
@@ -30,10 +31,10 @@ const emptySnapshot = (): SubtitleSessionSnapshot => ({ generation: 1, updateRea
  * @param text primary 本文。
  * @returns 独立したtimelineとhistoryを持つsnapshot。
  */
-const snapshot = (text: string): SubtitleSessionSnapshot => {
+const snapshot = (text: string, generation = 1): SubtitleSessionSnapshot => {
   const timeline = { primary: [{ startTime: 0, endTime: 1, text }], secondary: [{ startTime: 0, endTime: 1, text: '訳' }] };
   const blocks = [{ kind: 'dialogue' as const, startTime: 0, endTime: 1, primary: [{ sourceIndex: 0, text }], secondary: [{ sourceIndex: 0, text: '訳' }] }];
-  return { generation: 1, updateReason: 'source', display: { status: 'ready', blocks, history: { past: [], current: blocks, future: [] } }, timeline, history: { past: emptyTimeline(), current: timeline, future: emptyTimeline() } };
+  return { generation, updateReason: 'source', display: { status: 'ready', blocks, history: { past: [], current: blocks, future: [] } }, timeline, history: { past: emptyTimeline(), current: timeline, future: emptyTimeline() } };
 };
 
 /**
@@ -116,13 +117,13 @@ describe('panel-session', /** 接続契約のケースを登録する。 */ () =
   it('初回・字幕更新を描画し、UI 更新では表示だけを切り替える', /** 最新入力と外部状態の非変更を検証する。 */ () => {
     const f = fixture();
     f.start();
-    expect(f.mount.textContent).toBe('first訳');
+    expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('first訳');
     expect(content(f.mount).hidden).toBe(false);
     expect(f.subtitles.subscribe).toHaveBeenCalledTimes(1);
     expect(f.ui.subscribe).toHaveBeenCalledTimes(1);
     f.getSubtitleSnapshot.mockReturnValue(snapshot('second'));
     f.subtitles.fire();
-    expect(f.mount.textContent).toBe('second訳');
+    expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('second訳');
     f.getState.mockReturnValue({ extensionEnabled: true, panelOpen: false });
     f.ui.fire();
     expect(content(f.mount).hidden).toBe(true);
@@ -140,17 +141,17 @@ describe('panel-session', /** 接続契約のケースを登録する。 */ () =
     const f = fixture();
     f.getSubtitleSnapshot.mockReturnValue(null);
     f.start();
-    expect(f.mount.textContent).toBe('表示できる字幕はありません');
+    expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('');
     f.getSubtitleSnapshot.mockReturnValue(emptySnapshot());
     f.subtitles.fire();
-    expect(f.mount.textContent).toBe('表示できる字幕はありません');
+    expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('');
     const initial = snapshot('future');
     if (initial.display.status !== 'ready') throw new Error('Expected ready fixture');
     const next = { ...initial, history: { past: emptyTimeline(), current: emptyTimeline(), future: initial.timeline }, display: { ...initial.display, history: { past: [], current: [], future: initial.display.blocks } } };
     const before = JSON.stringify(next);
     f.getSubtitleSnapshot.mockReturnValue(next);
     f.subtitles.fire();
-    expect(f.mount.textContent).toBe('future訳');
+    expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('future訳');
     expect(f.mount.querySelector('[aria-current]')).toBeNull();
     expect(JSON.stringify(next)).toBe(before);
   });
@@ -241,10 +242,10 @@ describe('panel-session', /** 接続契約のケースを登録する。 */ () =
     f.getSubtitleSnapshot.mockImplementationOnce(/** 更新時の読取失敗を再現する。@throws 取得エラー。 */ () => { throw error; });
     expect(/** 更新通知を発火する。 */ () => f.subtitles.fire()).not.toThrow();
     expect(log).toHaveBeenCalledWith('[atv-bilingual:panel] panel update failed', error);
-    expect(f.mount.textContent).toBe('first訳');
-    f.getSubtitleSnapshot.mockReturnValue(snapshot('recovered'));
+    expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('first訳');
+    f.getSubtitleSnapshot.mockReturnValue(snapshot('recovered', 2));
     f.subtitles.fire();
-    expect(f.mount.textContent).toBe('recovered訳');
+    expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('recovered訳');
   });
 
   it('snapshot 取得中の再入で古い結果を描画しない', /** 内側の新しい表示が外側に上書きされないことを確認する。 */ () => {
@@ -253,7 +254,7 @@ describe('panel-session', /** 接続契約のケースを登録する。 */ () =
     f.getSubtitleSnapshot.mockReturnValue(snapshot('new'));
     f.getSubtitleSnapshot.mockImplementationOnce(/** 新しい更新を再入させる。@returns 外側の古い snapshot。 */ () => { f.subtitles.fire(); return snapshot('old'); });
     f.subtitles.fire();
-    expect(f.mount.textContent).toBe('new訳');
+    expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('new訳');
   });
 
   it('UI state 取得中の再入でも古い結果を描画しない', /** 両取得境界で revision を確認する契約を検証する。 */ () => {
@@ -351,18 +352,18 @@ describe('panel-session の生成・描画失敗', () => {
         /** 期待する描画失敗ログを観測する。 */
         () => {},
       );
-      vi.spyOn(root, 'replaceChildren').mockImplementationOnce(
+      vi.spyOn(root.querySelector('[data-subtitle-list]')!, 'replaceChildren').mockImplementationOnce(
         /** 更新時 DOM 操作の失敗を再現する。@throws 描画エラー。 */
         () => { throw error; },
       );
-      f.getSubtitleSnapshot.mockReturnValue(snapshot('recovered'));
+      f.getSubtitleSnapshot.mockReturnValue(snapshot('recovered', 2));
       expect(/** 字幕更新を発火する。 */ () => f.subtitles.fire()).not.toThrow();
       expect(log).toHaveBeenCalledTimes(1);
       expect(log).toHaveBeenCalledWith('[atv-bilingual:panel] panel update failed', error);
-      expect(f.mount.textContent).toBe('first訳');
+      expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('first訳');
       expect(f.subtitles.unsubscribe).not.toHaveBeenCalled();
       f.subtitles.fire();
-      expect(f.mount.textContent).toBe('recovered訳');
+      expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('recovered訳');
       expect(content(f.mount)).toBe(root);
       expect(log).toHaveBeenCalledTimes(1);
     },
@@ -534,7 +535,7 @@ describe('panel-session の同期通知と cleanup 再入',
             const unsubscribe = register(listener);
             listener();
             // 通知中は観測だけ行い、assertion は初期化の捕捉境界の外へ置く。
-            duringText = f.mount.textContent;
+            duringText = f.mount.querySelector('[data-subtitle-list]')?.textContent ?? null;
             duringHidden = content(f.mount).hidden;
             f.getSubtitleSnapshot.mockReturnValue(snapshot('latest'));
             f.getState.mockReturnValue({ extensionEnabled: true, panelOpen: true });
@@ -544,7 +545,7 @@ describe('panel-session の同期通知と cleanup 再入',
         f.start();
         expect(duringText).toBe('during訳');
         expect(duringHidden).toBe(true);
-        expect(f.mount.textContent).toBe('latest訳');
+        expect(f.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('latest訳');
         expect(content(f.mount).hidden).toBe(false);
         expect(f.getSubtitleSnapshot).toHaveBeenCalledTimes(2);
         expect(f.getState).toHaveBeenCalledTimes(2);
@@ -561,7 +562,7 @@ describe('panel-session の同期通知と cleanup 再入',
         const session = f.start();
         const root = content(f.mount);
         const before = root.innerHTML;
-        const replace = vi.spyOn(root, 'replaceChildren');
+        const replace = vi.spyOn(root.querySelector('[data-subtitle-list]')!, 'replaceChildren');
         f.getSubtitleSnapshot.mockReturnValue(snapshot('late'));
         f.getState.mockImplementationOnce(
           /** 取得途中で接続を停止する。@returns 停止前の表示意思を想定した値。 */
@@ -592,7 +593,7 @@ describe('panel-session の同期通知と cleanup 再入',
         const f = fixture();
         const session = f.start();
         const root = content(f.mount);
-        const replace = vi.spyOn(root, 'replaceChildren');
+        const replace = vi.spyOn(root.querySelector('[data-subtitle-list]')!, 'replaceChildren');
         const target = stage === 'ui' ? f.ui : f.subtitles;
         target.unsubscribe.mockImplementation(
           /** 解除中に両方の旧通知と再停止を発生させる。 */
@@ -647,14 +648,46 @@ describe('panel-session の同期通知と cleanup 再入',
         old.dispose();
         first.ui.fire();
         first.subtitles.fire();
-        expect(first.mount.textContent).toBe('new connection訳');
+        expect(first.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('new connection訳');
         expect(first.mount.querySelectorAll('#atv-panel-host')).toHaveLength(1);
         expect(next.ui.unsubscribe).not.toHaveBeenCalled();
         expect(next.subtitles.unsubscribe).not.toHaveBeenCalled();
         next.getSubtitleSnapshot.mockReturnValue(snapshot('updated new'));
         next.subtitles.fire();
-        expect(first.mount.textContent).toBe('updated new訳');
+        expect(first.mount.querySelector('[data-subtitle-list]')?.textContent).toBe('updated new訳');
       },
     );
   },
 );
+
+
+describe('panel-sessionのfollow接続', () => {
+  it('初回・字幕seek・UI通知を分離して渡す', () => {
+    const f=fixture(); const before=vi.fn(); const after=vi.fn(); const dispose=vi.fn();
+    vi.spyOn(panelFollow,'createPanelFollow').mockReturnValue({beforeRender:before,afterRender:after,dispose});
+    const data={...snapshot('seek'),updateReason:'seek' as const}; f.getSubtitleSnapshot.mockReturnValue(data);
+    const session=f.start();
+    expect(after).toHaveBeenLastCalledWith(expect.objectContaining({trigger:'initial'}));
+    f.subtitles.fire(); expect(after).toHaveBeenLastCalledWith(expect.objectContaining({trigger:'seek'}));
+    f.ui.fire(); expect(after).toHaveBeenLastCalledWith(expect.objectContaining({trigger:'ui'}));
+    expect(before).toHaveBeenCalledTimes(3); session.dispose(); expect(dispose).toHaveBeenCalledTimes(1);
+  });
+  it('描画中の再入では新しい更新だけがfollow後処理へ到達する', () => {
+    const f=fixture(); const after=vi.fn();
+    vi.spyOn(panelFollow,'createPanelFollow').mockReturnValue({beforeRender:vi.fn(),afterRender:after,dispose:vi.fn()});
+    const render=vi.fn(()=>({scrollEl:document.createElement('div'),resumeButton:document.createElement('button'),blockElements:[]}));
+    vi.spyOn(panelRenderer,'createPanelRenderer').mockReturnValue({render,dispose:vi.fn()});
+    f.start(); after.mockClear();
+    render.mockImplementationOnce(()=>{f.subtitles.fire();return {scrollEl:document.createElement('div'),resumeButton:document.createElement('button'),blockElements:[]};});
+    f.subtitles.fire(); expect(after).toHaveBeenCalledTimes(1);
+  });
+  it('外部購読・follow・renderer・hostの順で解放する', () => {
+    const f=fixture();
+    vi.spyOn(panelFollow,'createPanelFollow').mockReturnValue({beforeRender:vi.fn(),afterRender:vi.fn(),dispose:()=>{f.operations.push('follow');}});
+    const session=f.start(); const root=content(f.mount); const host=f.mount.querySelector<HTMLElement>('#atv-panel-host')!;
+    const removeRoot=root.remove.bind(root); const removeHost=host.remove.bind(host);
+    vi.spyOn(root,'remove').mockImplementation(()=>{f.operations.push('renderer');removeRoot();});
+    vi.spyOn(host,'remove').mockImplementation(()=>{f.operations.push('host');removeHost();});
+    session.dispose(); expect(f.operations).toEqual(['ui','subtitle','follow','renderer','host']);
+  });
+});

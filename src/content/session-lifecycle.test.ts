@@ -1042,18 +1042,18 @@ describe('session-lifecycle の panel 接続',
           lifecycle.start(target);
           const host = target.panelMountEl.querySelector('#atv-panel-host');
           expect(host).not.toBeNull();
-          expect(host?.textContent).toBe('表示できる字幕はありません');
+          expect(host?.querySelector('[data-subtitle-list]')?.textContent).toBe('');
           scheduler.fire(0);
           expect(target.panelMountEl.querySelector('#atv-panel-host')).toBe(host);
           setTrackCount(target.videoEl, 1);
           scheduler.fire(1);
           expect(lifecycle.getState().status).toBe('running');
           expect(target.panelMountEl.querySelector('#atv-panel-host')).toBe(host);
-          expect(host?.textContent).toBe('first');
+          expect(host?.querySelector('[data-subtitle-list]')?.textContent).toBe('first');
           const next = createSubtitleDataMock('updated');
           data.getSnapshot.mockReturnValue(next.session.getSnapshot());
           data.fire();
-          expect(host?.textContent).toBe('updated');
+          expect(host?.querySelector('[data-subtitle-list]')?.textContent).toBe('updated');
           ui.setPanelOpen(false);
           expect(target.panelMountEl.querySelector<HTMLElement>('[data-subtitle-panel]')?.hidden).toBe(true);
           expect(data.dispose).not.toHaveBeenCalled();
@@ -1220,7 +1220,7 @@ describe('session-lifecycle の panel 接続',
           expect(removal).toHaveReturnedTimes(1);
           expect(lifecycle.getState().status).toBe('running');
           expect(lifecycle.getState().reason).toBe('manual-restart');
-          expect(target.panelMountEl.textContent).toBe('second');
+          expect(target.panelMountEl.querySelector('[data-subtitle-list]')?.textContent).toBe('second');
           expect(first.dispose).toHaveBeenCalledTimes(1);
           expect(second.dispose).not.toHaveBeenCalled();
         } finally { lifecycle.dispose(); }
