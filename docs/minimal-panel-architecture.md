@@ -183,9 +183,9 @@ src/
 │  │  └─ Apple TV+ ネイティブ字幕メニュー listener の attach / detach を扱う
 │  ├─ subtitle-timeline.ts
 │  │  └─ sourceの言語別cueを検証し、元時刻・本文を保持する元の字幕データを構築する
-│  ├─ subtitle-text-parts.ts〈新規実装予定〉
+│  ├─ subtitle-text-parts.ts
 │  │  └─ 表示本文の準備・セリフと補助の分類・変換失敗の有無を返す
-│  ├─ subtitle-display-blocks.ts〈新規実装予定〉
+│  ├─ subtitle-display-blocks.ts
 │  │  └─ 同じ世代の元字幕と準備結果から表示枠を構築する
 │  └─ subtitle-history.ts
 │     └─ 元字幕の分類と表示枠の分類を別の関数で導出する
@@ -195,7 +195,7 @@ src/
 │  │  └─ panel host DOM の生成、mount、unmount を担当する
 │  ├─ panel-renderer.ts
 │  │  └─ display と UI state を受け、枠DOM・本文・並び・強調を更新する
-│  └─ panel-follow.ts〈新規実装予定〉
+│  └─ panel-follow.ts
 │     └─ 閲覧位置の維持・操作listener・自動追従・解除を所有する
 │
 ├─ controls/
@@ -212,7 +212,7 @@ src/
 │  ├─ ui-state.ts
 │  │  └─ extension enabled / panel open を持つ small store
 │  └─ extension-enabled-controller.ts
-│     └─ ON/OFF の復元・操作・保存順序・通知状態を所有する（Phase 7で実装）
+│     └─ ON/OFF の復元・操作・保存順序・通知状態を所有する
 │
 ├─ settings/
 │  ├─ language-options.ts
@@ -233,7 +233,7 @@ src/
 
 ---
 
-表示処理の追加配置はsubtitle-text-parts.ts（本文準備・囲み分類）、subtitle-display-blocks.ts（枠構築）、panel-follow.ts（位置維持・追従）とする。これらは配置を確定した新規実装予定のmoduleであり、実装済みファイルと混同しない。入出力は§17に従う。
+表示処理の追加配置はsubtitle-text-parts.ts（本文準備・囲み分類）、subtitle-display-blocks.ts（枠構築）、panel-follow.ts（位置維持・追従）とする。各moduleの入出力は§17に従う。
 
 ## 6. 各ファイルの責務
 
@@ -384,15 +384,15 @@ panel host の mount / unmount の owner はこの module だけとする。
 - 接続なし・正常な空・利用不能を内部で区別し、古い枠を残さない。画面は字幕一覧を空にし、案内文・再試行ボタンを追加しない。不正時刻の表示は§14.10に従う。
 - source・video・TextTrack・Apple TV+ selectorを直接持たず、自身のDOMと参照を解除する。具体的な公開定義は§17を参照する。
 
-### `src/panel/panel-follow.ts`〈新規実装予定〉
+### `src/panel/panel-follow.ts`
 
-案内対象選択・閲覧位置の記録と復元・即時スクロール・ユーザー操作検知・手動停止と明示再開を所有する。現在借りているDOM対応、listenerと予約処理を同じownerが解放する。本文変換・元字幕分類・枠構築を行わず、source・videoを直接読まない。§14.10・§14.12の規則と§17の定義に従う。新規実装予定のmoduleを実装済みとして扱わない。
+案内対象選択・閲覧位置の記録と復元・即時スクロール・ユーザー操作検知・手動停止と明示再開を所有する。現在借りているDOM対応、listenerと予約処理を同じownerが解放する。本文変換・元字幕分類・枠構築を行わず、source・videoを直接読まない。§14.10・§14.12の規則と§17の定義に従う。
 
-### `src/subtitles/subtitle-text-parts.ts`〈新規実装予定〉
+### `src/subtitles/subtitle-text-parts.ts`
 
 既存subtitle-textの変換を再利用し、字幕ごとの原文fallbackと完全囲みの判定でセリフ/補助へ分類する。元言語・入力位置を保持し、枠構築・現在判定・購読・panel DOMを持たない。
 
-### `src/subtitles/subtitle-display-blocks.ts`〈新規実装予定〉
+### `src/subtitles/subtitle-display-blocks.ts`
 
 同じ世代のtimelineと準備結果から、セリフの学習言語枠・候補・競合・母国語配置・補助枠・固定順を導出する。本文変換と時刻更新を重複せず、listener・timer・observer・DOMを持たない。
 
@@ -647,7 +647,7 @@ shared/*
 表示接続と描画          lifecycle / panel-session → panel-renderer
 ```
 
-これは製品の表示仕様に必要な処理の流れであり、未実装moduleのファイル名を確定する図ではない。各処理の責務は§14、具体的な公開型・関数配置の未確定事項は同節末尾を参照する。
+この図は製品の表示処理の流れを示す。各処理の責務は§14、moduleの配置は§5・§6、公開型とAPIは§17・§18を参照する。
 source更新では元データと派生結果を再構築する。時刻だけの更新では構築済みブロックの状態だけを再計算する。取得だけでは再構築せず、同じ世代の結果を公開する。
 §17・§18の字幕単位historyは既存の取得境界として区別し、表示ブロックの現在状態へ読み替えない。rendererはsource・videoを読まず、sourceはpanel DOMを操作しない。
 意味による対訳判定、別経路の現在字幕store、再生履歴を蓄積して作るブロックは導入しない。
@@ -1031,15 +1031,15 @@ panel closeと拡張OFFの違い、資源の唯一の所有者、stopとdispose�
 | 対象 | 役割・入出力 |
 |---|---|
 | subtitle-text.ts | 既存のWebVTT解析・ruby注釈除去を再利用する |
-| subtitle-text-parts.ts〈新規実装予定〉 | timelineから、言語別の表示用本文・元入力位置・セリフ/補助の準備結果を作る。字幕ごとの変換失敗は原文をセリフ側へ残す |
-| subtitle-display-blocks.ts〈新規実装予定〉 | 同じ世代のtimelineと準備結果から、結合・競合・母国語配置・補助枠生成・固定順の全枠配列を導出する |
+| subtitle-text-parts.ts | timelineから、言語別の表示用本文・元入力位置・セリフ/補助の準備結果を作る。字幕ごとの変換失敗は原文をセリフ側へ残す |
+| subtitle-display-blocks.ts | 同じ世代のtimelineと準備結果から、結合・競合・母国語配置・補助枠生成・固定順の全枠配列を導出する |
 | subtitle-history.ts | 元字幕分類とは別の関数で、構築済み枠と有限非負時刻から表示枠の3区分を導出する |
 | subtitle-session.ts | 元データ・準備結果・枠構成・分類を所有し、同じ世代で公開・通知・解放する |
 | panel-renderer.ts | 渡されたdisplayをtextContentで描画し、同じ世代の枠DOMを再利用する。本文変換・結合・時刻判定・スクロールを持たない |
-| panel-follow.ts〈新規実装予定〉 | 案内対象の選択、位置維持・即時スクロール、操作listener、追従状態・予約処理を所有する |
+| panel-follow.ts | 案内対象の選択、位置維持・即時スクロール、操作listener、追従状態・予約処理を所有する |
 | panel-session.ts | 取得・購読、描画前後のfollow呼出し、再入遮断とcleanupを接続する |
 
-新規実装予定のファイルを実装済みとみなさない。具体的な関数・描画結果・followの定義は§17に従う。
+具体的な関数・描画結果・followの定義は§17に従う。
 
 #### snapshotと更新
 
